@@ -57,11 +57,11 @@ const App = () => {
   // Безопасная проверка переменных окружения при загрузке
   useEffect(() => {
     try {
-      // Пытаемся получить ключ из переменных окружения Vercel
+      // Пытаемся получить ключ из переменных окружения Vercel (VITE_GEMINI_KEY)
       const envKey = import.meta.env.VITE_GEMINI_KEY;
       if (envKey) setSessionGeminiKey(envKey);
     } catch (e) {
-      // В среде разработки Canvas переменные окружения могут быть недоступны
+      // Игнорируем ошибки доступа к env в среде разработки
     }
   }, []);
 
@@ -94,7 +94,7 @@ const App = () => {
     return () => unsubscribe();
   }, []);
 
-  // 2. Загрузка данных
+  // 2. Загрузка данных (Тесты и Задачи)
   useEffect(() => {
     if (!user || !db) return;
     const mRef = collection(db, 'artifacts', PORTAL_ID, 'public', 'data', 'materials');
@@ -116,7 +116,7 @@ const App = () => {
     return () => unsubscribe();
   }, [user, isAdminAuthenticated]);
 
-  // 4. Таймер
+  // 4. Таймер теста
   useEffect(() => {
     if (view === 'quiz' && activeMaterial?.questions) {
       const totalSeconds = activeMaterial.questions.length * 120;
@@ -135,31 +135,36 @@ const App = () => {
   const showToast = (msg) => { setToastMessage(msg); setTimeout(() => setToastMessage(null), 5000); };
   const formatTime = (s) => `${Math.floor(s / 60)}:${s % 60 < 10 ? '0' + (s % 60) : s % 60}`;
 
-  // --- ЛОГИКА ГЕНЕРАЦИИ ТЕСТОВ (v1 API) ---
+  // --- ЛОГИКА ГЕНЕРАЦИИ ТЕСТОВ (Стабильная версия) ---
   const handleGenerateTest = async (existing = null) => {
     const text = (existing ? existing.content : inputText) || "";
     const title = (existing ? existing.title : inputTitle) || "";
     
-    if (!text.trim() || !title.trim()) return showToast("Заполните заголовок и текст!");
+    if (!text.trim() || !title.trim()) return showToast("Заполните название и текст!");
     if (!sessionGeminiKey) return showToast("Сначала введите API Ключ в зеленое поле!");
     
     setIsLoading(true);
     try {
-      // ИСПРАВЛЕННЫЙ URL (Стабильная версия v1)
+      // Используем стабильный URL (v1) и правильный формат запроса
       const url = `https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key=${sessionGeminiKey}`;
       
       const payload = {
         contents: [{ 
-            role: "user",
-            parts: [{ text: `TASK: Based on medical text, generate exactly 30 MCQs in Russian. Output format MUST be a RAW JSON ARRAY: [{"text": "...", "options": ["...", "...", "...", "..."], "correctIndex": 0}]. TEXT: ${text.substring(0, 100000)}` }] 
+            parts: [{ text: `TASK: Based on the medical material provided, generate exactly 30 high-quality multiple-choice questions in Russian. Output format MUST be a RAW JSON ARRAY of objects. Schema: [{"text": "...", "options": ["...", "...", "...", "..."], "correctIndex": 0}]. MATERIAL:\n${text.substring(0, 100000)}` }] 
         }],
-        generationConfig: { responseMimeType: "application/json" }
+        generationConfig: {
+            responseMimeType: "application/json"
+        }
       };
 
-      const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
-      const data = await res.json();
+      const res = await fetch(url, { 
+        method: 'POST', 
+        headers: { 'Content-Type': 'application/json' }, 
+        body: JSON.stringify(payload) 
+      });
 
-      if (!res.ok) throw new Error(data.error?.message || "Ошибка ИИ. Проверьте ключ.");
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error?.message || "Ошибка API ИИ");
 
       const rawContent = data.candidates?.[0]?.content?.parts?.[0]?.text;
       const questions = JSON.parse(rawContent);
@@ -168,7 +173,7 @@ const App = () => {
         title, content: text, questions, updatedAt: Date.now(), isVisible: false 
       });
       
-      showToast("Тест успешно создан!");
+      showToast("Тест создан успешно!");
       setView('admin-materials');
       setInputText(''); setInputTitle('');
     } catch (e) { 
@@ -206,28 +211,28 @@ const App = () => {
   };
 
   const renderCurrentView = () => {
-    if (!user) return <div className="min-h-screen w-full bg-slate-950 flex items-center justify-center text-white font-black animate-pulse">ВХОД...</div>;
+    if (!user) return <div className="min-h-screen w-full bg-slate-950 flex items-center justify-center text-white font-black animate-pulse uppercase tracking-[0.3em]">ВХОД...</div>;
 
     switch (view) {
       case 'welcome': return (
         <div className="min-h-screen w-full bg-slate-950 flex items-center justify-center p-4">
           <div className="max-w-md w-full bg-white rounded-[3rem] p-10 shadow-2xl text-center flex flex-col items-center">
-            <div className="bg-emerald-500 w-16 h-16 rounded-2xl mb-6 flex items-center justify-center"><GraduationCap className="text-white w-10 h-10" /></div>
+            <div className="bg-emerald-500 w-16 h-16 rounded-2xl mb-6 flex items-center justify-center shadow-xl"><GraduationCap className="text-white w-10 h-10" /></div>
             <h1 className="text-3xl font-black text-slate-900 mb-2 uppercase tracking-tight">Госпитальная хирургия</h1>
             <p className="text-slate-400 font-bold text-[9px] uppercase tracking-widest mb-10 opacity-70">Аттестационный портал</p>
-            <div className="space-y-4 w-full">
+            <div className="space-y-4 w-full text-center">
               <input type="text" value={studentName} onChange={(e) => setStudentName(e.target.value)} placeholder="ФИО студента" className="w-full p-5 bg-slate-50 border-2 border-slate-100 rounded-2xl outline-none focus:border-emerald-500 text-slate-800 text-center font-bold" />
               <button disabled={!studentName} onClick={() => setView('menu')} className="w-full bg-emerald-600 text-white font-black py-5 rounded-2xl shadow-lg active:scale-95 transition-all">ВОЙТИ</button>
-              <button onClick={() => setView('admin-login')} className="text-slate-400 hover:text-emerald-600 text-[10px] font-black uppercase mt-4 block w-full text-center">Администрирование</button>
+              <button onClick={() => setView('admin-login')} className="text-slate-400 hover:text-emerald-600 text-[10px] font-black uppercase mt-4 block w-full tracking-widest text-center">Администрирование</button>
             </div>
           </div>
         </div>
       );
 
       case 'menu': return (
-        <div className="min-h-screen w-full bg-slate-950 flex flex-col items-center justify-center p-4 gap-12 text-center">
-          <h2 className="text-white text-4xl font-black uppercase tracking-tighter">Выберите раздел</h2>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-8 w-full max-w-4xl text-left">
+        <div className="min-h-screen w-full bg-slate-950 flex flex-col items-center justify-center p-4 gap-12 text-center text-center">
+          <h2 className="text-white text-4xl font-black uppercase tracking-tighter text-center">Выберите раздел</h2>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-8 w-full max-w-4xl text-center">
             <button onClick={() => setView('student-select-test')} className="bg-white p-12 rounded-[3.5rem] shadow-2xl border-4 border-transparent hover:border-emerald-500 transition-all group flex flex-col items-center">
               <div className="bg-emerald-100 w-16 h-16 rounded-2xl flex items-center justify-center mb-8 group-hover:scale-110 transition-transform"><ClipboardList className="text-emerald-600 w-8 h-8" /></div>
               <h3 className="text-2xl font-black text-slate-900 uppercase leading-none">Тестирование</h3>
@@ -244,7 +249,7 @@ const App = () => {
       case 'admin-login': return (
         <div className="min-h-screen w-full bg-slate-950 flex items-center justify-center p-4">
           <div className="max-w-md w-full bg-white rounded-[3rem] p-12 shadow-2xl flex flex-col items-center text-center">
-            <ShieldCheck className="w-16 h-16 text-slate-900 mx-auto mb-10" />
+            <ShieldCheck className="w-16 h-16 text-slate-900 mx-auto mb-10 text-center" />
             <input type="password" value={adminPassword} onChange={(e) => setAdminPassword(e.target.value)} placeholder="••••" className="w-full p-6 bg-slate-50 border-2 border-slate-100 rounded-2xl outline-none focus:border-slate-900 font-black text-center text-slate-900 tracking-[1em] text-3xl mb-10 shadow-inner" />
             <button 
               onClick={() => adminPassword === ADMIN_PASSWORD_SECRET ? (setIsAdminAuthenticated(true), setView('admin')) : showToast("Код неверен")} 
@@ -269,12 +274,12 @@ const App = () => {
               </div>
             </div>
             
-            {/* БЕЗОПАСНЫЙ ВВОД КЛЮЧА API */}
+            {/* БЕЗОПАСНЫЙ ВВОД КЛЮЧА API (НЕ ХРАНИТСЯ В КОДЕ) */}
             <div className="bg-emerald-950 p-8 rounded-[3rem] mb-12 shadow-2xl flex flex-col md:flex-row items-center gap-6 border-4 border-emerald-500/20">
                 <div className="bg-emerald-500 p-4 rounded-2xl"><Key className="text-white w-8 h-8" /></div>
-                <div className="flex-1 text-left">
-                    <h3 className="text-white font-black uppercase text-sm mb-1">Ключ Gemini API (Для ИИ)</h3>
-                    <p className="text-emerald-400 text-[10px] font-bold uppercase tracking-widest">Введите ваш рабочий ключ здесь. Он не сохраняется на GitHub!</p>
+                <div className="flex-1 text-left text-left">
+                    <h3 className="text-white font-black uppercase text-sm mb-1 text-left">Ключ Gemini API (Для ИИ)</h3>
+                    <p className="text-emerald-400 text-[10px] font-bold uppercase tracking-widest text-left">Введите ваш рабочий ключ здесь. Он не сохраняется на GitHub!</p>
                 </div>
                 <input 
                     type="password" 
@@ -285,17 +290,17 @@ const App = () => {
                 />
             </div>
 
-            <div className="bg-white rounded-[4rem] shadow-xl overflow-hidden border border-slate-100 flex flex-col">
-              <div className="p-10 bg-slate-50/50 border-b border-slate-100 text-center font-black text-slate-900 uppercase text-xs tracking-[0.3em]">Журнал результатов</div>
-              <div className="overflow-x-auto p-10">
-                <table className="w-full text-left min-w-[950px]">
+            <div className="bg-white rounded-[4rem] shadow-xl overflow-hidden border border-slate-100 flex flex-col text-left">
+              <div className="p-10 bg-slate-50/50 border-b border-slate-100 text-center font-black text-slate-900 uppercase text-xs tracking-[0.3em] text-center">Журнал результатов</div>
+              <div className="overflow-x-auto p-10 text-left">
+                <table className="w-full text-left min-w-[950px] text-left">
                   <thead className="bg-slate-900 text-slate-400 text-[10px] uppercase font-black text-left">
                     <tr><th className="px-10 py-8">Курсант / Дата</th><th className="px-10 py-8">Тема</th><th className="px-10 py-8 text-center text-center">Результат %</th><th className="px-10 py-8 text-right text-right">Статус</th></tr>
                   </thead>
                   <tbody className="divide-y divide-slate-50 text-sm font-bold text-left">
                     {results.map(r => (
                       <tr key={r.id} className="hover:bg-slate-50 transition-all group">
-                        <td className="px-10 py-8"><div className="flex items-center gap-5 text-left text-left"><div className={`w-14 h-14 rounded-[1.2rem] flex items-center justify-center font-black text-xl border-2 ${r.percentage >= 70 ? 'border-emerald-100 bg-emerald-50 text-emerald-600' : 'border-red-100 bg-red-50 text-red-600 text-center'}`}>{r.studentName?.charAt(0)}</div><div className="text-left text-left"><p className="font-black text-slate-900 text-lg uppercase text-left">{r.studentName}</p><p className="text-[10px] font-bold text-slate-400 uppercase text-left">{r.dateString}</p></div></div></td>
+                        <td className="px-10 py-8 text-left text-left text-left"><div className="flex items-center gap-5 text-left text-left"><div className={`w-14 h-14 rounded-[1.2rem] flex items-center justify-center font-black text-xl border-2 ${r.percentage >= 70 ? 'border-emerald-100 bg-emerald-50 text-emerald-600' : 'border-red-100 bg-red-50 text-red-600 text-center'}`}>{r.studentName?.charAt(0)}</div><div className="text-left text-left"><p className="font-black text-slate-900 text-lg uppercase text-left">{r.studentName}</p><p className="text-[10px] font-bold text-slate-400 uppercase text-left">{r.dateString}</p></div></div></td>
                         <td className="px-10 py-8 text-slate-600 uppercase truncate max-w-[200px] text-left">{r.materialTitle}</td>
                         <td className="px-10 py-8 text-center font-black text-3xl text-slate-900 text-center">{r.percentage}%</td>
                         <td className="px-10 py-8 text-right text-right text-right"><span className={`inline-block px-6 py-3 rounded-2xl text-[10px] font-black uppercase tracking-widest shadow-sm ${r.percentage >= 70 ? 'bg-emerald-600 text-white' : 'bg-red-50 text-white'}`}>{r.percentage >= 70 ? 'Зачет' : 'Незачет'}</span></td>
@@ -309,134 +314,15 @@ const App = () => {
         </div>
       );
 
-      case 'student-select-test': return (
-        <div className="min-h-screen w-full bg-slate-950 p-6 flex flex-col items-center">
-          <div className="max-w-4xl w-full">
-            <button onClick={() => setView('menu')} className="text-slate-400 font-black text-[10px] uppercase mb-10 flex items-center gap-2 hover:text-white transition-colors"><ChevronLeft className="w-4 h-4" /> Назад</button>
-            <h2 className="text-white text-4xl font-black mb-12 uppercase tracking-tight">Доступные тесты</h2>
-            <div className="grid gap-4">
-              {materials.filter(m => m.isVisible).map(m => (
-                <button key={m.id} onClick={() => { setActiveMaterial(m); setStudentAnswers([]); setCurrentQuestionIndex(0); setView('quiz'); }} className="bg-slate-800/50 hover:bg-slate-800 p-8 rounded-[2rem] border-2 border-slate-700 flex items-center justify-between group transition-all text-left shadow-lg">
-                  <div className="flex items-center gap-6">
-                    <div className="bg-emerald-500 p-4 rounded-2xl shadow-lg"><ClipboardList className="text-white w-6 h-6" /></div>
-                    <h4 className="text-white font-black text-xl uppercase tracking-tight">{m.title}</h4>
-                  </div>
-                  <ChevronRight className="text-slate-600 group-hover:text-emerald-400" />
-                </button>
-              ))}
-            </div>
-          </div>
-        </div>
-      );
-
-      case 'quiz':
-        const q_quiz = activeMaterial?.questions[currentQuestionIndex];
-        const isAns_quiz = studentAnswers[currentQuestionIndex] !== undefined;
-        return (
-          <div className="min-h-screen w-full bg-slate-950 flex flex-col items-center">
-            <div className="w-full bg-slate-800/80 p-5 border-b border-slate-700 flex justify-between px-10 text-white sticky top-0 z-50 backdrop-blur-lg">
-              <div className={`flex items-center gap-3 px-6 py-2 rounded-2xl font-black ${timeLeft < 60 ? 'bg-red-500 animate-pulse' : 'bg-slate-700'}`}>
-                <Clock className="w-5 h-5 text-center" /><span className="tabular-nums text-center">{formatTime(timeLeft)}</span>
-              </div>
-              <div className="font-black text-emerald-400 text-xl">{currentQuestionIndex + 1} <span className="text-slate-500 font-normal">/ {activeMaterial.questions.length}</span></div>
-            </div>
-            <div className="max-w-4xl w-full p-6 flex-1 flex flex-col justify-center text-left">
-              <div className="bg-white rounded-[3.5rem] p-12 md:p-16 shadow-2xl relative mb-10 overflow-hidden text-left">
-                <h2 className="text-2xl md:text-3xl font-bold text-slate-900 mb-12 leading-tight relative z-10">{q_quiz?.text}</h2>
-                <div className="grid gap-4 relative z-10">
-                  {q_quiz?.options.map((opt, idx) => {
-                    const isSel = studentAnswers[currentQuestionIndex] === idx;
-                    const isCorr = idx === q_quiz.correctIndex;
-                    let cls = 'border-slate-100 bg-slate-50 text-slate-600 hover:border-emerald-400 hover:bg-emerald-50 transition-all text-left';
-                    if (isAns_quiz) {
-                      if (isSel) cls = isCorr ? 'border-emerald-500 bg-emerald-50 text-emerald-700 font-black scale-[1.02]' : 'border-red-500 bg-red-50 text-red-700 font-black';
-                      else cls = isCorr ? 'border-emerald-200 bg-emerald-50/50 text-emerald-700' : 'opacity-40 grayscale';
-                    }
-                    return <button key={idx} disabled={isAns_quiz} onClick={() => { const a = [...studentAnswers]; a[currentQuestionIndex] = idx; setStudentAnswers(a); }} className={`w-full text-left p-6 md:p-8 rounded-2xl border-2 font-bold text-lg shadow-sm ${cls}`}>{opt}</button>
-                  })}
-                </div>
-              </div>
-              <div className="flex justify-between items-center px-4 w-full max-w-4xl">
-                <button disabled={currentQuestionIndex === 0} onClick={() => setCurrentQuestionIndex(p => p - 1)} className="text-slate-400 font-black uppercase text-xs flex items-center gap-2 hover:text-white transition-all"><ArrowLeft className="w-4 h-4" /> Назад</button>
-                {currentQuestionIndex === (activeMaterial.questions.length - 1) 
-                  ? <button onClick={finishQuiz} disabled={!isAns_quiz} className="bg-emerald-600 text-white px-12 py-5 rounded-2xl font-black shadow-xl uppercase text-sm">Завершить</button>
-                  : <button onClick={() => setCurrentQuestionIndex(p => p + 1)} disabled={!isAns_quiz} className="bg-blue-600 text-white px-12 py-5 rounded-2xl font-black shadow-xl uppercase text-sm flex items-center gap-3">Далее <ArrowRight className="w-5 h-5" /></button>
-                }
-              </div>
-            </div>
-          </div>
-        );
-
-      case 'result': return (
-        <div className="min-h-screen w-full bg-slate-950 flex items-center justify-center p-4">
-          <div className="max-w-2xl w-full bg-white rounded-[5rem] p-20 shadow-2xl relative text-center animate-in zoom-in">
-            <Trophy className="w-20 h-20 text-emerald-600 mx-auto mb-10" />
-            <h1 className="text-4xl font-black text-slate-900 mb-10 uppercase tracking-tighter">Тест завершен</h1>
-            <div className="grid grid-cols-2 gap-8 mb-12 w-full text-center">
-              <div className="bg-emerald-50 p-10 rounded-[3rem] border border-emerald-100 shadow-sm text-center">
-                <p className="text-[10px] font-black text-emerald-400 uppercase mb-4 tracking-widest text-center">Баллы</p>
-                <p className="text-6xl font-black text-emerald-600 text-center">{(results[0]?.score || 0)} <span className="text-2xl text-emerald-300 font-normal">/ {(results[0]?.total || 0)}</span></p>
-              </div>
-              <div className="bg-slate-50 p-10 rounded-[3rem] border border-slate-100 shadow-sm text-center">
-                <p className="text-[10px] font-black text-slate-400 uppercase mb-4 tracking-widest text-center">Процент</p>
-                <p className="text-6xl font-black text-slate-900 text-center">{(results[0]?.percentage || 0)}%</p>
-              </div>
-            </div>
-            <button onClick={() => setView('menu')} className="w-full bg-slate-900 text-white font-black py-8 rounded-[2.5rem] shadow-2xl hover:bg-slate-800 transition-all active:scale-95 text-lg">На главную</button>
-          </div>
-        </div>
-      );
-
-      case 'admin-materials': return (
-        <div className="min-h-screen w-full bg-slate-50 p-6 md:p-12 text-left flex flex-col items-center">
-            <div className="max-w-6xl w-full">
-                <button onClick={() => setView('admin')} className="text-slate-400 font-black text-[10px] uppercase mb-12 flex items-center gap-3 hover:text-slate-900 transition-all self-start text-left"><ArrowLeft className="w-5 h-5" /> Назад</button>
-                <h2 className="text-4xl font-black text-slate-900 uppercase mb-16 tracking-tighter text-left">Библиотека тестов</h2>
-                <div className="grid gap-6">
-                    {materials.map(m => (
-                        <div key={m.id} className="bg-white border border-slate-100 rounded-[3rem] p-10 shadow-xl flex flex-col md:flex-row justify-between items-center gap-10 group hover:border-emerald-300 transition-all text-left">
-                            <div className="flex items-center gap-8 flex-1 text-left">
-                                <div onClick={() => updateDoc(doc(db, 'artifacts', PORTAL_ID, 'public', 'data', 'materials', m.id), { isVisible: !m.isVisible })} className={`cursor-pointer w-20 h-20 rounded-[2rem] flex items-center justify-center transition-all ${m.isVisible ? 'bg-emerald-500 text-white shadow-xl shadow-emerald-500/20' : 'bg-slate-100 text-slate-400 border-2 border-slate-200'} text-center`}>{m.isVisible ? <Unlock className="w-8 h-8" /> : <Lock className="w-8 h-8" />}</div>
-                                <div className="text-left"><h4 className="font-black text-2xl text-slate-900 uppercase leading-none mb-4 text-left">{m.title}</h4><div className="flex gap-6 items-center text-left"><span className="text-[10px] font-black text-slate-400 uppercase text-left">{m.questions?.length} вопросов</span><span className={`text-[10px] font-black uppercase px-3 py-1 rounded-lg ${m.isVisible ? 'bg-emerald-50 text-emerald-600' : 'bg-red-50 text-red-500'}`}>{m.isVisible ? "ОТКРЫТ" : "СКРЫТ"}</span></div></div>
-                            </div>
-                            <div className="flex items-center gap-4 text-right">
-                                <button disabled={isLoading} onClick={() => handleGenerateTest(m)} className="px-8 py-5 bg-slate-100 text-slate-600 rounded-[1.5rem] font-black text-[10px] uppercase flex items-center gap-3 active:scale-95 hover:bg-emerald-50 border border-slate-200 text-center">{isLoading ? <Loader2 className="animate-spin w-4 h-4"/> : <RefreshCw className="w-4 h-4"/>} ОБНОВИТЬ ИИ</button>
-                                <button onClick={() => { if(confirm("Удалить этот тест?")) deleteDoc(doc(db, 'artifacts', PORTAL_ID, 'public', 'data', 'materials', m.id)); }} className="p-6 bg-red-50 text-red-500 rounded-[1.5rem] hover:bg-red-500 hover:text-white transition-all text-center"><Trash2 className="w-6 h-6" /></button>
-                            </div>
-                        </div>
-                    ))}
-                </div>
-            </div>
-        </div>
-      );
-
-      case 'setup-test': return (
-        <div className="min-h-screen bg-slate-900 flex items-center justify-center p-4 text-center">
-            <div className="max-w-5xl w-full bg-white rounded-[4rem] p-12 sm:p-20 shadow-2xl relative text-center flex flex-col items-center">
-                <button onClick={() => setView('admin')} className="absolute top-12 left-12 text-slate-400 font-black uppercase text-[10px] flex items-center gap-3 hover:text-slate-900 transition-all self-start text-left"><ArrowLeft className="w-5 h-5" /> Назад</button>
-                <div className="bg-emerald-100 w-24 h-24 rounded-3xl mb-10 flex items-center justify-center"><Plus className="w-12 h-12 text-emerald-600"/></div>
-                <h2 className="text-4xl font-black text-slate-900 uppercase mb-2 tracking-tight text-center">Создание ИИ Теста</h2>
-                <div className="space-y-6 text-left w-full mt-10">
-                    <input type="text" value={inputTitle} onChange={e => setInputTitle(e.target.value)} placeholder="Тема теста" className="w-full p-8 bg-slate-50 border-2 border-transparent rounded-3xl focus:bg-white focus:border-emerald-600 font-bold text-slate-900 text-center uppercase text-xl placeholder:text-blue-200 text-center" />
-                    <textarea value={inputText} onChange={e => setInputText(e.target.value)} placeholder="Вставьте учебный материал..." className="w-full h-[400px] p-10 bg-slate-50 border-2 border-transparent rounded-[3rem] focus:bg-white focus:border-emerald-600 outline-none resize-none font-bold text-slate-700 text-lg shadow-inner scrollbar-hide text-left" />
-                </div>
-                <button disabled={isLoading || !inputText || !inputTitle} onClick={() => handleGenerateTest()} className="w-full mt-10 bg-emerald-600 hover:bg-emerald-500 text-white font-black py-8 rounded-[2.5rem] shadow-2xl active:scale-95 transition-all uppercase tracking-[0.2em] shadow-emerald-500/20 text-xl flex items-center justify-center gap-6 text-center text-center">
-                  {isLoading ? <Loader2 className="animate-spin w-8 h-8 text-center"/> : <RefreshCw className="w-8 h-8 text-center"/>} 
-                  {isLoading ? "ГЕНЕРАЦИЯ (30-60 сек)..." : "СФОРМИРОВАТЬ ТЕСТ"}
-                </button>
-            </div>
-        </div>
-      );
-
       default: return null;
     }
   };
 
   return (
-    <div className="font-sans antialiased text-left w-full min-h-screen flex flex-col bg-slate-950 items-center justify-center">
+    <div className="font-sans antialiased text-left w-full min-h-screen flex flex-col selection:bg-emerald-100 selection:text-emerald-900 bg-slate-950 items-center justify-center text-left text-left">
       {renderCurrentView()}
       {toastMessage && (
-        <div className="fixed bottom-10 left-1/2 -translate-x-1/2 bg-slate-900 text-white px-12 py-6 rounded-[2.5rem] font-black shadow-2xl z-[100] border-2 border-slate-700 uppercase text-xs animate-in fade-in slide-in-from-bottom-4 text-center">
+        <div className="fixed bottom-10 left-1/2 -translate-x-1/2 bg-slate-900 text-white px-12 py-6 rounded-[2.5rem] font-black shadow-2xl z-[100] border-2 border-slate-700 uppercase text-xs animate-in fade-in slide-in-from-bottom-4 text-center text-center">
           {toastMessage}
         </div>
       )}
