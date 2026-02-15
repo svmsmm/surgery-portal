@@ -28,9 +28,7 @@ const firebaseConfig = {
   measurementId: "G-1P2WMCMEMC"
 };
 
-// --- Инициализация Firebase ---
 const isFirebaseReady = firebaseConfig && firebaseConfig.apiKey !== "";
-
 let app, auth, db;
 if (isFirebaseReady) {
   try {
@@ -52,10 +50,8 @@ const App = () => {
   const [isLoading, setIsLoading] = useState(false);
   const [toastMessage, setToastMessage] = useState(null);
 
-  // Ключ ИИ: используем состояние для безопасного хранения
   const [sessionGeminiKey, setSessionGeminiKey] = useState("");
 
-  // Безопасное получение ключа при загрузке
   useEffect(() => {
     try {
       const metaEnv = typeof import.meta !== 'undefined' ? import.meta.env : null;
@@ -96,7 +92,6 @@ const App = () => {
     if (!user || !db) return;
     const mRef = collection(db, 'artifacts', PORTAL_ID, 'public', 'data', 'materials');
     const tRef = collection(db, 'artifacts', PORTAL_ID, 'public', 'data', 'task_sections');
-    
     const unsubM = onSnapshot(mRef, (s) => setMaterials(s.docs.map(d => ({ id: d.id, ...d.data() }))));
     const unsubT = onSnapshot(tRef, (s) => setTaskSections(s.docs.map(d => ({ id: d.id, ...d.data() }))));
     return () => { unsubM(); unsubT(); };
@@ -138,7 +133,7 @@ const App = () => {
     return `${min}:${sec < 10 ? '0' + sec : sec}`;
   };
 
-  // --- ИСПРАВЛЕННАЯ ЛОГИКА ГЕНЕРАЦИИ (Фикс snake_case и парсинга) ---
+  // --- ЭКСПЕРТНАЯ ЛОГИКА ГЕНЕРАЦИИ (БЕЗОПАСНЫЙ МЕТОД) ---
   const handleGenerateTest = async (existing = null) => {
     const text = existing ? existing.content : inputText;
     const title = existing ? existing.title : inputTitle;
@@ -148,14 +143,14 @@ const App = () => {
 
     setIsLoading(true);
     try {
-      // ИСПРАВЛЕНО: Используем v1 и корректный snake_case в конфиге
+      // Используем максимально простой v1 URL, без специфических флагов конфига
       const url = `https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key=${sessionGeminiKey}`;
       
-      const prompt = `Medical Professor Mode. TASK: Based on the clinical text provided, generate exactly 30 high-quality MCQs in Russian. 
-      Format: JSON ARRAY.
-      Schema: [{"text": "...", "options": ["...", "...", "...", "..."], "correctIndex": 0}]
+      const prompt = `Medical Professor Mode. TASK: Create exactly 30 MCQs in Russian based on the text. 
+      IMPORTANT: Return ONLY a raw JSON array. No markdown, no text before or after.
+      Structure: [{"text": "Q", "options": ["A", "B", "C", "D"], "correctIndex": 0}]
       
-      TEXT:
+      TEXT FOR ANALYSIS:
       ${text.substring(0, 50000)}`;
 
       const res = await fetch(url, {
@@ -164,23 +159,22 @@ const App = () => {
         body: JSON.stringify({ 
           contents: [{ parts: [{ text: prompt }] }],
           generationConfig: { 
-            response_mime_type: "application/json" // ИСПРАВЛЕНО: snake_case вместо camelCase
+            temperature: 0.1 // Снижаем температуру для точности JSON
           }
         })
       });
 
       const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error?.message || "Ошибка сервера ИИ");
-      }
+      if (!res.ok) throw new Error(data.error?.message || "Ошибка API");
 
-      // Умная очистка ответа
-      let rawText = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
-      // Удаляем возможные блоки ```json или просто лишние символы
-      const jsonStart = rawText.indexOf('[');
-      const jsonEnd = rawText.lastIndexOf(']') + 1;
-      const cleanJson = rawText.substring(jsonStart, jsonEnd);
+      let rawResponse = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
       
+      // БУЛЛЕТПРУФ ПАРСИНГ: Ищем массив внутри любого текста
+      const start = rawResponse.indexOf('[');
+      const end = rawResponse.lastIndexOf(']') + 1;
+      if (start === -1 || end === 0) throw new Error("ИИ прислал неверный формат. Попробуйте еще раз.");
+      
+      const cleanJson = rawResponse.substring(start, end);
       const questions = JSON.parse(cleanJson);
       
       await setDoc(doc(db, 'artifacts', PORTAL_ID, 'public', 'data', 'materials', existing?.id || crypto.randomUUID()), { 
@@ -191,7 +185,7 @@ const App = () => {
       setView('admin-materials');
       setInputText(''); setInputTitle('');
     } catch (e) { 
-      console.error(e);
+      console.error("AI Error Details:", e);
       showToast("Ошибка: " + e.message); 
     } finally { setIsLoading(false); }
   };
@@ -215,6 +209,7 @@ const App = () => {
   };
 
   const finishQuiz = async () => {
+    if (!activeMaterial) return;
     clearInterval(timerRef.current);
     const score = studentAnswers.reduce((acc, ans, idx) => acc + (ans === activeMaterial.questions[idx].correctIndex ? 1 : 0), 0);
     const total = activeMaterial.questions.length;
@@ -261,8 +256,8 @@ const App = () => {
       );
 
       case 'admin-login': return (
-        <div className="min-h-screen bg-slate-950 flex items-center justify-center p-4">
-          <div className="max-w-md w-full bg-white rounded-[3rem] p-12 shadow-2xl flex flex-col items-center text-center">
+        <div className="min-h-screen bg-slate-950 flex items-center justify-center p-4 text-center">
+          <div className="max-w-md w-full bg-white rounded-[3rem] p-12 shadow-2xl flex flex-col items-center">
             <ShieldCheck className="w-16 h-16 text-slate-900 mx-auto mb-10 text-center" />
             <input type="password" value={adminPassword} onChange={(e) => setAdminPassword(e.target.value)} placeholder="••••" className="w-full p-6 bg-slate-50 border-2 border-slate-100 rounded-2xl outline-none focus:border-slate-900 font-black text-center text-slate-900 tracking-[1em] text-3xl mb-10 shadow-inner text-center" />
             <button 
@@ -282,18 +277,18 @@ const App = () => {
             <div className="flex flex-col md:flex-row justify-between items-center gap-10 mb-16">
               <div className="text-left"><h1 className="text-4xl font-black text-slate-900 uppercase leading-none tracking-tighter">Управление</h1></div>
               <div className="flex flex-wrap gap-4 justify-center">
-                <button onClick={() => setView('admin-tasks-list')} className="bg-blue-600 text-white px-8 py-5 rounded-[2rem] text-[10px] font-black uppercase shadow-lg"><Stethoscope className="w-5 h-5 inline mr-2" /> Задачи</button>
-                <button onClick={() => setView('admin-materials')} className="bg-white text-slate-900 border-2 border-slate-200 px-8 py-5 rounded-[2rem] text-[10px] font-black uppercase shadow-sm"><ClipboardList className="w-5 h-5 inline mr-2" /> Тесты</button>
-                <button onClick={() => setView('setup-test')} className="bg-emerald-600 text-white px-8 py-5 rounded-[2rem] text-[10px] font-black uppercase shadow-xl"><Plus className="w-5 h-5 inline mr-2" /> Новый тест</button>
+                <button onClick={() => setView('admin-tasks-list')} className="bg-blue-600 text-white px-8 py-5 rounded-[2rem] text-[10px] font-black uppercase shadow-lg hover:bg-blue-700 transition-all text-center flex items-center gap-2"><Stethoscope className="w-5 h-5" /> Задачи</button>
+                <button onClick={() => setView('admin-materials')} className="bg-white text-slate-900 border-2 border-slate-200 px-8 py-5 rounded-[2rem] text-[10px] font-black uppercase shadow-sm hover:bg-slate-50 transition-all text-center flex items-center gap-2"><ClipboardList className="w-5 h-5" /> Тесты</button>
+                <button onClick={() => setView('setup-test')} className="bg-emerald-600 text-white px-8 py-5 rounded-[2rem] text-[10px] font-black uppercase shadow-xl hover:bg-emerald-700 transition-all text-center flex items-center gap-2"><Plus className="w-5 h-5" /> Новый тест</button>
                 <button onClick={() => {setIsAdminAuthenticated(false); setView('welcome');}} className="bg-white text-slate-400 px-6 py-5 rounded-xl text-[10px] font-black border-2 border-slate-100">Выход</button>
               </div>
             </div>
             
             <div className="bg-emerald-950 p-8 rounded-[3rem] mb-12 shadow-2xl flex flex-col md:flex-row items-center gap-6 border-4 border-emerald-500/20">
                 <div className="bg-emerald-500 p-4 rounded-2xl"><Key className="text-white w-8 h-8" /></div>
-                <div className="flex-1 text-left">
-                    <h3 className="text-white font-black uppercase text-sm mb-1">Ключ Gemini API</h3>
-                    <p className="text-emerald-400 text-[10px] font-bold uppercase tracking-widest">Введите ваш рабочий ключ здесь.</p>
+                <div className="flex-1 text-left text-left">
+                    <h3 className="text-white font-black uppercase text-sm mb-1 text-left">Ключ Gemini API</h3>
+                    <p className="text-emerald-400 text-[10px] font-bold uppercase tracking-widest text-left">Введите рабочий ключ для работы ИИ.</p>
                 </div>
                 <input 
                     type="password" 
@@ -340,7 +335,7 @@ const App = () => {
                 </div>
                 <button disabled={isLoading || !inputText || !inputTitle} onClick={() => handleGenerateTest()} className="w-full mt-10 bg-emerald-600 hover:bg-emerald-500 text-white font-black py-8 rounded-[2.5rem] shadow-2xl active:scale-95 transition-all uppercase tracking-[0.2em] shadow-emerald-500/20 text-xl flex items-center justify-center gap-6 text-center">
                   {isLoading ? <Loader2 className="animate-spin w-8 h-8 text-center"/> : <RefreshCw className="w-8 h-8 text-center"/>} 
-                  {isLoading ? "ГЕНЕРАЦИЯ (30-60 сек)..." : "СФОРМИРОВАТЬ ТЕСТ"}
+                  {isLoading ? "ГЕНЕРАЦИЯ..." : "СФОРМИРОВАТЬ ТЕСТ"}
                 </button>
             </div>
         </div>
@@ -350,7 +345,7 @@ const App = () => {
         <div className="min-h-screen bg-slate-50 p-6 md:p-12 text-left flex flex-col items-center">
             <div className="max-w-6xl w-full">
                 <button onClick={() => setView('admin')} className="text-slate-400 font-black text-[10px] uppercase mb-12 flex items-center gap-3 hover:text-slate-900 transition-all self-start text-left"><ArrowLeft className="w-5 h-5" /> Назад</button>
-                <h2 className="text-4xl font-black text-slate-900 uppercase mb-16 tracking-tighter text-left text-left">База тестов</h2>
+                <h2 className="text-4xl font-black text-slate-900 uppercase mb-16 tracking-tighter text-left text-left">Библиотека тестов</h2>
                 <div className="grid gap-6">
                     {materials.map(m => (
                         <div key={m.id} className="bg-white border border-slate-100 rounded-[3rem] p-10 shadow-xl flex flex-col md:flex-row justify-between items-center gap-10 group hover:border-emerald-300 transition-all text-left">
