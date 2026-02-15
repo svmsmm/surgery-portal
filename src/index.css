@@ -1,9 +1,4 @@
-* УБРАНЫ ВСЕ @tailwind ДИРЕКТИВЫ.
-   Это гарантирует, что Vercel не выдаст ошибку сборки css.
-   Дизайн работает через CDN в index.html.
-*/
-
-:root {
+root {
   color-scheme: dark;
 }
 
