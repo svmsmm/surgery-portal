@@ -1,5 +1,5 @@
-/* Удалены директивы @tailwind, так как они подключены через CDN в index.html.
-  Это устраняет ошибку "[lightningcss minify] Unknown at rule" в Vercel.
+/* Удалены директивы @tailwind, так как они вызывают ошибку [lightningcss minify]. 
+  Дизайн работает через CDN в index.html.
 */
 
 :root {
