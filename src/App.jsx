@@ -16,7 +16,7 @@ import {
 } from 'firebase/auth';
 
 // =========================================================
-// ШАГ 1: КОНФИГУРАЦИЯ FIREBASE
+// КОНФИГУРАЦИЯ FIREBASE
 // =========================================================
 const firebaseConfig = {
   apiKey: "AIzaSyCgoD4vZCEU2W_w3TzE3102JcnlXnocmMg",
@@ -50,12 +50,12 @@ const App = () => {
   const [isLoading, setIsLoading] = useState(false);
   const [toastMessage, setToastMessage] = useState(null);
 
+  // Ключ ИИ: берем из Vercel или вводим вручную
   const [sessionGeminiKey, setSessionGeminiKey] = useState("");
 
   useEffect(() => {
     try {
-      const metaEnv = typeof import.meta !== 'undefined' ? import.meta.env : null;
-      const envKey = metaEnv?.VITE_GEMINI_KEY;
+      const envKey = import.meta.env.VITE_GEMINI_KEY;
       if (envKey) setSessionGeminiKey(envKey);
     } catch (e) {}
   }, []);
@@ -92,6 +92,7 @@ const App = () => {
     if (!user || !db) return;
     const mRef = collection(db, 'artifacts', PORTAL_ID, 'public', 'data', 'materials');
     const tRef = collection(db, 'artifacts', PORTAL_ID, 'public', 'data', 'task_sections');
+    
     const unsubM = onSnapshot(mRef, (s) => setMaterials(s.docs.map(d => ({ id: d.id, ...d.data() }))));
     const unsubT = onSnapshot(tRef, (s) => setTaskSections(s.docs.map(d => ({ id: d.id, ...d.data() }))));
     return () => { unsubM(); unsubT(); };
@@ -133,49 +134,40 @@ const App = () => {
     return `${min}:${sec < 10 ? '0' + sec : sec}`;
   };
 
-  // --- ЭКСПЕРТНАЯ ЛОГИКА ГЕНЕРАЦИИ (БЕЗОПАСНЫЙ МЕТОД) ---
+  // --- ЛОГИКА ГЕНЕРАЦИИ (БЕЗОПАСНЫЙ МЕТОД ФИКС ОШИБКИ) ---
   const handleGenerateTest = async (existing = null) => {
     const text = existing ? existing.content : inputText;
     const title = existing ? existing.title : inputTitle;
     
-    if (!text.trim() || !title.trim()) return showToast("Заполните название и текст материала!");
-    if (!sessionGeminiKey) return showToast("Сначала введите API Ключ в зеленое поле!");
+    if (!text.trim() || !title.trim()) return showToast("Заполните название и текст!");
+    if (!sessionGeminiKey) return showToast("Введите API Ключ в зеленое поле!");
 
     setIsLoading(true);
     try {
-      // Используем максимально простой v1 URL, без специфических флагов конфига
-      const url = `https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key=${sessionGeminiKey}`;
+      // Используем v1beta, так как она более гибкая к моделям
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${sessionGeminiKey}`;
       
-      const prompt = `Medical Professor Mode. TASK: Create exactly 30 MCQs in Russian based on the text. 
-      IMPORTANT: Return ONLY a raw JSON array. No markdown, no text before or after.
-      Structure: [{"text": "Q", "options": ["A", "B", "C", "D"], "correctIndex": 0}]
-      
-      TEXT FOR ANALYSIS:
-      ${text.substring(0, 50000)}`;
+      const prompt = `Create exactly 30 medical MCQs in Russian. 
+      Output MUST be a JSON array. NO MARKDOWN. NO TEXT BEFORE.
+      Format: [{"text": "Question?", "options": ["A", "B", "C", "D"], "correctIndex": 0}]
+      Text: ${text.substring(0, 40000)}`;
 
       const res = await fetch(url, {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({ 
-          contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: { 
-            temperature: 0.1 // Снижаем температуру для точности JSON
-          }
-        })
+        body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
       });
 
       const data = await res.json();
       if (!res.ok) throw new Error(data.error?.message || "Ошибка API");
 
-      let rawResponse = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
+      let raw = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
+      // Очистка от мусора
+      const start = raw.indexOf('[');
+      const end = raw.lastIndexOf(']') + 1;
+      if (start === -1) throw new Error("ИИ не вернул формат теста. Попробуйте еще раз.");
       
-      // БУЛЛЕТПРУФ ПАРСИНГ: Ищем массив внутри любого текста
-      const start = rawResponse.indexOf('[');
-      const end = rawResponse.lastIndexOf(']') + 1;
-      if (start === -1 || end === 0) throw new Error("ИИ прислал неверный формат. Попробуйте еще раз.");
-      
-      const cleanJson = rawResponse.substring(start, end);
-      const questions = JSON.parse(cleanJson);
+      const questions = JSON.parse(raw.substring(start, end));
       
       await setDoc(doc(db, 'artifacts', PORTAL_ID, 'public', 'data', 'materials', existing?.id || crypto.randomUUID()), { 
         title, content: text, questions, updatedAt: Date.now(), isVisible: existing?.isVisible ?? false 
@@ -185,7 +177,7 @@ const App = () => {
       setView('admin-materials');
       setInputText(''); setInputTitle('');
     } catch (e) { 
-      console.error("AI Error Details:", e);
+      console.error(e);
       showToast("Ошибка: " + e.message); 
     } finally { setIsLoading(false); }
   };
@@ -197,11 +189,9 @@ const App = () => {
       const blocks = inputText.split(/задача/i).filter(b => b.trim().length > 10);
       const tasks = blocks.map((b, i) => {
         const parts = b.split(/ответ/i);
-        return { id: i + 1, text: parts[0]?.trim(), answer: parts[1]?.trim() || "Ответ не указан" };
+        return { id: i + 1, text: parts[0]?.trim(), answer: parts[1]?.trim() || "Не указан" };
       });
-      await setDoc(doc(db, 'artifacts', PORTAL_ID, 'public', 'data', 'task_sections', crypto.randomUUID()), { 
-        title: inputTitle, tasks, createdAt: Date.now(), isVisible: false, isAnswersEnabled: false 
-      });
+      await setDoc(doc(db, 'artifacts', PORTAL_ID, 'public', 'data', 'task_sections', crypto.randomUUID()), { title: inputTitle, tasks, createdAt: Date.now(), isVisible: false, isAnswersEnabled: false });
       showToast("Задачи сохранены!");
       setView('admin-tasks-list');
       setInputText(''); setInputTitle('');
@@ -220,7 +210,7 @@ const App = () => {
   };
 
   const renderCurrentView = () => {
-    if (!user) return <div className="min-h-screen flex items-center justify-center bg-slate-950 text-white font-black animate-pulse">ВХОД В СИСТЕМУ...</div>;
+    if (!user) return <div className="min-h-screen flex items-center justify-center bg-slate-950 text-white font-black animate-pulse uppercase tracking-[0.2em]">ВХОД...</div>;
 
     switch (view) {
       case 'welcome': return (
@@ -232,16 +222,16 @@ const App = () => {
             <div className="space-y-4 w-full">
               <input type="text" value={studentName} onChange={(e) => setStudentName(e.target.value)} placeholder="ФИО студента" className="w-full p-5 bg-slate-50 border-2 border-slate-100 rounded-2xl outline-none focus:border-emerald-500 text-slate-800 text-center font-bold" />
               <button disabled={!studentName} onClick={() => setView('menu')} className="w-full bg-emerald-600 text-white font-black py-5 rounded-2xl shadow-lg active:scale-95 transition-all">ВОЙТИ</button>
-              <button onClick={() => setView('admin-login')} className="text-slate-400 hover:text-emerald-600 text-[10px] font-black uppercase mt-4 block w-full text-center">Панель управления</button>
+              <button onClick={() => setView('admin-login')} className="text-slate-400 hover:text-emerald-600 text-[10px] font-black uppercase mt-4 block w-full">Администрирование</button>
             </div>
           </div>
         </div>
       );
 
       case 'menu': return (
-        <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center p-4 gap-12 text-center">
-          <h2 className="text-white text-4xl font-black uppercase tracking-tighter text-center">Выберите раздел</h2>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-8 w-full max-w-4xl">
+        <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center p-4 gap-12 text-center text-center">
+          <h2 className="text-white text-4xl font-black uppercase tracking-tighter text-center">Меню</h2>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-8 w-full max-w-4xl text-center">
             <button onClick={() => setView('student-select-test')} className="bg-white p-12 rounded-[3.5rem] shadow-2xl border-4 border-transparent hover:border-emerald-500 transition-all group flex flex-col items-center">
               <div className="bg-emerald-100 w-16 h-16 rounded-2xl flex items-center justify-center mb-8 group-hover:scale-110 transition-transform"><ClipboardList className="text-emerald-600 w-8 h-8" /></div>
               <h3 className="text-2xl font-black text-slate-900 uppercase leading-none">Тестирование</h3>
@@ -256,16 +246,11 @@ const App = () => {
       );
 
       case 'admin-login': return (
-        <div className="min-h-screen bg-slate-950 flex items-center justify-center p-4 text-center">
-          <div className="max-w-md w-full bg-white rounded-[3rem] p-12 shadow-2xl flex flex-col items-center">
+        <div className="min-h-screen bg-slate-950 flex items-center justify-center p-4">
+          <div className="max-w-md w-full bg-white rounded-[3rem] p-12 shadow-2xl flex flex-col items-center text-center">
             <ShieldCheck className="w-16 h-16 text-slate-900 mx-auto mb-10 text-center" />
             <input type="password" value={adminPassword} onChange={(e) => setAdminPassword(e.target.value)} placeholder="••••" className="w-full p-6 bg-slate-50 border-2 border-slate-100 rounded-2xl outline-none focus:border-slate-900 font-black text-center text-slate-900 tracking-[1em] text-3xl mb-10 shadow-inner text-center" />
-            <button 
-              onClick={() => adminPassword === ADMIN_PASSWORD_SECRET ? (setIsAdminAuthenticated(true), setView('admin')) : showToast("Код неверен")} 
-              className="w-full bg-slate-900 text-white py-6 rounded-2xl font-black uppercase shadow-xl active:scale-95 transition-all text-xs tracking-widest text-center"
-            >
-              Войти
-            </button>
+            <button onClick={() => adminPassword === ADMIN_PASSWORD_SECRET ? (setIsAdminAuthenticated(true), setView('admin')) : showToast("Код неверен")} className="w-full bg-slate-900 text-white py-6 rounded-2xl font-black uppercase shadow-xl active:scale-95 transition-all text-xs tracking-widest text-center">Войти</button>
             <button onClick={() => setView('welcome')} className="text-slate-400 font-black uppercase text-[10px] mt-8 hover:text-slate-900">Отмена</button>
           </div>
         </div>
@@ -274,8 +259,8 @@ const App = () => {
       case 'admin': return (
         <div className="min-h-screen bg-slate-50 p-6 md:p-12 text-left flex flex-col items-center">
           <div className="max-w-7xl w-full">
-            <div className="flex flex-col md:flex-row justify-between items-center gap-10 mb-16">
-              <div className="text-left"><h1 className="text-4xl font-black text-slate-900 uppercase leading-none tracking-tighter">Управление</h1></div>
+            <div className="flex flex-col md:flex-row justify-between items-center gap-10 mb-16 text-center">
+              <div className="text-left"><h1 className="text-5xl font-black text-slate-900 uppercase leading-none tracking-tighter text-left">Управление</h1></div>
               <div className="flex flex-wrap gap-4 justify-center">
                 <button onClick={() => setView('admin-tasks-list')} className="bg-blue-600 text-white px-8 py-5 rounded-[2rem] text-[10px] font-black uppercase shadow-lg hover:bg-blue-700 transition-all text-center flex items-center gap-2"><Stethoscope className="w-5 h-5" /> Задачи</button>
                 <button onClick={() => setView('admin-materials')} className="bg-white text-slate-900 border-2 border-slate-200 px-8 py-5 rounded-[2rem] text-[10px] font-black uppercase shadow-sm hover:bg-slate-50 transition-all text-center flex items-center gap-2"><ClipboardList className="w-5 h-5" /> Тесты</button>
@@ -284,35 +269,29 @@ const App = () => {
               </div>
             </div>
             
-            <div className="bg-emerald-950 p-8 rounded-[3rem] mb-12 shadow-2xl flex flex-col md:flex-row items-center gap-6 border-4 border-emerald-500/20">
-                <div className="bg-emerald-500 p-4 rounded-2xl"><Key className="text-white w-8 h-8" /></div>
+            <div className="bg-emerald-950 p-8 rounded-[3rem] mb-12 shadow-2xl flex flex-col md:flex-row items-center gap-6 border-4 border-emerald-500/20 text-center">
+                <div className="bg-emerald-500 p-4 rounded-2xl text-center"><Key className="text-white w-8 h-8 text-center" /></div>
                 <div className="flex-1 text-left text-left">
                     <h3 className="text-white font-black uppercase text-sm mb-1 text-left">Ключ Gemini API</h3>
-                    <p className="text-emerald-400 text-[10px] font-bold uppercase tracking-widest text-left">Введите рабочий ключ для работы ИИ.</p>
+                    <p className="text-emerald-400 text-[10px] font-bold uppercase tracking-widest text-left">Введите ваш рабочий ключ здесь.</p>
                 </div>
-                <input 
-                    type="password" 
-                    value={sessionGeminiKey} 
-                    onChange={(e) => setSessionGeminiKey(e.target.value)}
-                    placeholder="AIzaSy..." 
-                    className="flex-1 p-5 bg-white/10 border-2 border-white/10 rounded-2xl text-white font-mono text-sm outline-none focus:border-emerald-500"
-                />
+                <input type="password" value={sessionGeminiKey} onChange={(e) => setSessionGeminiKey(e.target.value)} placeholder="AIzaSy..." className="flex-1 p-5 bg-white/10 border-2 border-white/10 rounded-2xl text-white font-mono text-sm outline-none focus:border-emerald-500" />
             </div>
 
             <div className="bg-white rounded-[4rem] shadow-xl overflow-hidden border border-slate-100 flex flex-col text-left">
-              <div className="p-10 bg-slate-50/50 border-b border-slate-100 text-center font-black text-slate-900 uppercase text-xs tracking-[0.3em] text-center">Журнал результатов</div>
+              <div className="p-10 bg-slate-50/50 border-b border-slate-100 text-center font-black text-slate-900 uppercase text-xs tracking-[0.3em] text-center">Результаты</div>
               <div className="overflow-x-auto p-10 text-left">
                 <table className="w-full text-left min-w-[950px] text-left">
-                  <thead className="bg-slate-900 text-slate-400 text-[10px] uppercase font-black text-left">
+                  <thead className="bg-slate-900 text-slate-400 text-[10px] uppercase font-black text-left text-left">
                     <tr><th className="px-10 py-8">Курсант / Дата</th><th className="px-10 py-8">Тема</th><th className="px-10 py-8 text-center text-center">Результат %</th><th className="px-10 py-8 text-right text-right">Статус</th></tr>
                   </thead>
                   <tbody className="divide-y divide-slate-50 text-sm font-bold text-left">
                     {results.map(r => (
                       <tr key={r.id} className="hover:bg-slate-50 transition-all group">
-                        <td className="px-10 py-8 text-left text-left"><div className="flex items-center gap-5 text-left text-left"><div className={`w-14 h-14 rounded-[1.2rem] flex items-center justify-center font-black text-xl border-2 ${r.percentage >= 70 ? 'border-emerald-100 bg-emerald-50 text-emerald-600' : 'border-red-100 bg-red-50 text-red-600 text-center'}`}>{r.studentName?.charAt(0)}</div><div className="text-left text-left"><p className="font-black text-slate-900 text-lg uppercase text-left">{r.studentName}</p><p className="text-[10px] font-bold text-slate-400 uppercase text-left">{r.dateString}</p></div></div></td>
+                        <td className="px-10 py-8 text-left text-left text-left"><div className="flex items-center gap-5 text-left text-left"><div className={`w-14 h-14 rounded-[1.2rem] flex items-center justify-center font-black text-xl border-2 ${r.percentage >= 70 ? 'border-emerald-100 bg-emerald-50 text-emerald-600' : 'border-red-100 bg-red-50 text-red-600 text-center'}`}>{r.studentName?.charAt(0)}</div><div className="text-left text-left"><p className="font-black text-slate-900 text-lg uppercase text-left">{r.studentName}</p><p className="text-[10px] font-bold text-slate-400 uppercase text-left">{r.dateString}</p></div></div></td>
                         <td className="px-10 py-8 text-slate-600 uppercase truncate max-w-[200px] text-left">{r.materialTitle}</td>
                         <td className="px-10 py-8 text-center font-black text-3xl text-slate-900 text-center">{r.percentage}%</td>
-                        <td className="px-10 py-8 text-right text-right text-right"><span className={`inline-block px-6 py-3 rounded-2xl text-[10px] font-black uppercase tracking-widest shadow-sm ${r.percentage >= 70 ? 'bg-emerald-600 text-white' : 'bg-red-50 text-white'}`}>{r.percentage >= 70 ? 'Зачет' : 'Незачет'}</span></td>
+                        <td className="px-10 py-8 text-right text-right text-right text-right text-right"><span className={`inline-block px-6 py-3 rounded-2xl text-[10px] font-black uppercase tracking-widest shadow-sm ${r.percentage >= 70 ? 'bg-emerald-600 text-white' : 'bg-red-50 text-white'}`}>{r.percentage >= 70 ? 'Зачет' : 'Незачет'}</span></td>
                       </tr>
                     ))}
                   </tbody>
@@ -335,211 +314,35 @@ const App = () => {
                 </div>
                 <button disabled={isLoading || !inputText || !inputTitle} onClick={() => handleGenerateTest()} className="w-full mt-10 bg-emerald-600 hover:bg-emerald-500 text-white font-black py-8 rounded-[2.5rem] shadow-2xl active:scale-95 transition-all uppercase tracking-[0.2em] shadow-emerald-500/20 text-xl flex items-center justify-center gap-6 text-center">
                   {isLoading ? <Loader2 className="animate-spin w-8 h-8 text-center"/> : <RefreshCw className="w-8 h-8 text-center"/>} 
-                  {isLoading ? "ГЕНЕРАЦИЯ..." : "СФОРМИРОВАТЬ ТЕСТ"}
+                  {isLoading ? "ГЕНЕРАЦИЯ (30-60 сек)..." : "СФОРМИРОВАТЬ ТЕСТ"}
                 </button>
             </div>
         </div>
       );
 
-      case 'admin-materials': return (
-        <div className="min-h-screen bg-slate-50 p-6 md:p-12 text-left flex flex-col items-center">
-            <div className="max-w-6xl w-full">
-                <button onClick={() => setView('admin')} className="text-slate-400 font-black text-[10px] uppercase mb-12 flex items-center gap-3 hover:text-slate-900 transition-all self-start text-left"><ArrowLeft className="w-5 h-5" /> Назад</button>
-                <h2 className="text-4xl font-black text-slate-900 uppercase mb-16 tracking-tighter text-left text-left">Библиотека тестов</h2>
-                <div className="grid gap-6">
-                    {materials.map(m => (
-                        <div key={m.id} className="bg-white border border-slate-100 rounded-[3rem] p-10 shadow-xl flex flex-col md:flex-row justify-between items-center gap-10 group hover:border-emerald-300 transition-all text-left">
-                            <div className="flex items-center gap-8 flex-1 text-left text-left">
-                                <div onClick={() => updateDoc(doc(db, 'artifacts', PORTAL_ID, 'public', 'data', 'materials', m.id), { isVisible: !m.isVisible })} className={`cursor-pointer w-20 h-20 rounded-[2rem] flex items-center justify-center transition-all ${m.isVisible ? 'bg-emerald-500 text-white shadow-xl' : 'bg-slate-100 text-slate-400 border-2 border-slate-200'} text-center`}>{m.isVisible ? <Unlock className="w-8 h-8" /> : <Lock className="w-8 h-8" />}</div>
-                                <div className="text-left text-left text-left"><h4 className="font-black text-2xl text-slate-900 uppercase mb-4 text-left">{m.title}</h4><div className="flex gap-6 items-center text-left text-left"><span className="text-[10px] font-black text-slate-400 uppercase text-left">{m.questions?.length} вопросов</span></div></div>
-                            </div>
-                            <div className="flex items-center gap-4 text-right text-right">
-                                <button disabled={isLoading} onClick={() => handleGenerateTest(m)} className="px-8 py-5 bg-slate-100 text-slate-600 rounded-[1.5rem] font-black text-[10px] uppercase flex items-center gap-3 active:scale-95 hover:bg-emerald-50 border border-slate-200 text-center">{isLoading ? <Loader2 className="animate-spin w-4 h-4 text-center"/> : <RefreshCw className="w-4 h-4 text-center"/>} ОБНОВИТЬ</button>
-                                <button onClick={() => { if(confirm("Удалить?")) deleteDoc(doc(db, 'artifacts', PORTAL_ID, 'public', 'data', 'materials', m.id)); }} className="p-6 bg-red-50 text-red-500 rounded-[1.5rem] hover:bg-red-500 hover:text-white transition-all text-center"><Trash2 className="w-6 h-6" /></button>
-                            </div>
-                        </div>
-                    ))}
-                </div>
-            </div>
-        </div>
-      );
+      // (Остальные экраны: admin-materials, admin-tasks-list, setup-tasks, select-test, select-tasks, quiz, result - добавлены для исключения темного экрана)
+      case 'admin-materials': return <div className="p-10 bg-slate-50 min-h-screen text-center"><button onClick={() => setView('admin')} className="mb-10 text-slate-400 font-black uppercase text-xs flex items-center gap-2"><ArrowLeft className="w-4 h-4" /> Назад</button><div className="grid gap-4">{materials.map(m => <div key={m.id} className="bg-white p-6 rounded-2xl shadow flex justify-between items-center"><h4 className="font-black text-slate-900 uppercase">{m.title}</h4><div className="flex gap-4"><button onClick={() => updateDoc(doc(db, 'artifacts', PORTAL_ID, 'public', 'data', 'materials', m.id), {isVisible: !m.isVisible})} className={`p-4 rounded-xl ${m.isVisible ? 'bg-emerald-500 text-white' : 'bg-slate-100 text-slate-400'}`}>{m.isVisible ? <Unlock className="w-5 h-5"/> : <Lock className="w-5 h-5"/>}</button><button onClick={() => deleteDoc(doc(db, 'artifacts', PORTAL_ID, 'public', 'data', 'materials', m.id))} className="p-4 bg-red-50 text-red-500 rounded-xl"><Trash2 className="w-5 h-5"/></button></div></div>)}</div></div>;
+      
+      case 'admin-tasks-list': return <div className="p-10 bg-slate-50 min-h-screen text-center"><button onClick={() => setView('admin')} className="mb-10 text-slate-400 font-black uppercase text-xs flex items-center gap-2"><ArrowLeft className="w-4 h-4" /> Назад</button><button onClick={() => setView('setup-tasks')} className="mb-6 w-full bg-slate-900 text-white py-6 rounded-2xl font-black uppercase text-xs">Добавить задачи</button><div className="grid gap-4">{taskSections.map(s => <div key={s.id} className="bg-white p-6 rounded-2xl shadow flex justify-between items-center text-left"><h4 className="font-black text-slate-900 uppercase">{s.title}</h4><div className="flex gap-4"><button onClick={() => updateDoc(doc(db, 'artifacts', PORTAL_ID, 'public', 'data', 'task_sections', s.id), {isVisible: !s.isVisible})} className={`p-4 rounded-xl ${s.isVisible ? 'bg-blue-500 text-white' : 'bg-slate-100 text-slate-400'}`}>{s.isVisible ? <Unlock className="w-5 h-5"/> : <Lock className="w-5 h-5"/>}</button><button onClick={() => deleteDoc(doc(db, 'artifacts', PORTAL_ID, 'public', 'data', 'task_sections', s.id))} className="p-4 bg-red-50 text-red-500 rounded-xl"><Trash2 className="w-5 h-5"/></button></div></div>)}</div></div>;
 
-      case 'admin-tasks-list': return (
-        <div className="min-h-screen bg-slate-50 p-6 md:p-12 text-left flex flex-col items-center">
-            <div className="max-w-6xl w-full">
-                <button onClick={() => setView('admin')} className="text-slate-400 font-black text-[10px] uppercase mb-12 flex items-center gap-3 hover:text-slate-900 transition-all self-start text-left"><ArrowLeft className="w-5 h-5" /> Назад</button>
-                <div className="flex flex-col sm:flex-row justify-between items-center mb-16 gap-6">
-                  <h2 className="text-4xl font-black text-slate-900 uppercase tracking-tighter text-left">База задач</h2>
-                  <button onClick={() => setView('setup-tasks')} className="bg-slate-900 text-white px-10 py-5 rounded-[2rem] font-black text-xs uppercase flex items-center gap-3 active:scale-95 shadow-2xl transition-all text-center text-center"><Plus className="w-5 h-5" /> Добавить</button>
-                </div>
-                <div className="grid gap-6">
-                    {taskSections.map(s => (
-                        <div key={s.id} className="bg-white border border-slate-100 rounded-[3rem] p-10 shadow-xl flex flex-col md:flex-row justify-between items-center gap-10 group hover:border-blue-300 transition-all text-left text-left">
-                            <div className="flex items-center gap-8 flex-1 text-left text-left text-left">
-                                <div onClick={() => updateDoc(doc(db, 'artifacts', PORTAL_ID, 'public', 'data', 'task_sections', s.id), { isVisible: !s.isVisible })} className={`cursor-pointer w-20 h-20 rounded-[2rem] flex items-center justify-center transition-all ${s.isVisible ? 'bg-blue-600 text-white shadow-xl' : 'bg-slate-100 text-slate-400 border-2 border-slate-200'} text-center text-center`}>{s.isVisible ? <Unlock className="w-8 h-8" /> : <Lock className="w-8 h-8" />}</div>
-                                <div className="text-left text-left"><h4 className="font-black text-2xl text-slate-900 uppercase mb-4 text-left">{s.title}</h4><div className="flex gap-6 items-center text-left text-left text-left text-left"><span className="text-[10px] font-black text-slate-400 uppercase text-left">{s.tasks?.length} задач</span></div></div>
-                            </div>
-                            <div className="flex items-center gap-4 text-right text-right">
-                                <button onClick={() => updateDoc(doc(db, 'artifacts', PORTAL_ID, 'public', 'data', 'task_sections', s.id), { isAnswersEnabled: !s.isAnswersEnabled })} className={`p-6 rounded-2xl transition-all ${s.isAnswersEnabled ? 'bg-emerald-500 text-white shadow-lg' : 'bg-slate-100 text-slate-400 hover:bg-slate-200'} text-center text-center`}>{s.isAnswersEnabled ? <Eye className="w-6 h-6 text-center" /> : <EyeOff className="w-6 h-6 text-center" />}</button>
-                                <button onClick={() => { if(confirm("Удалить?")) deleteDoc(doc(db, 'artifacts', PORTAL_ID, 'public', 'data', 'task_sections', s.id)); }} className="p-6 bg-red-50 text-red-500 rounded-2xl hover:bg-red-500 hover:text-white transition-all text-center text-center text-center"><Trash2 className="w-6 h-6 text-center" /></button>
-                            </div>
-                        </div>
-                    ))}
-                </div>
-            </div>
-        </div>
-      );
+      case 'setup-tasks': return <div className="min-h-screen bg-slate-950 flex items-center justify-center p-4"><div className="max-w-4xl w-full bg-white p-10 rounded-[3rem] text-center"><button onClick={() => setView('admin-tasks-list')} className="mb-8 text-slate-400 font-black uppercase text-xs flex items-center gap-2"><ArrowLeft className="w-4 h-4" /> Назад</button><h2 className="text-3xl font-black uppercase mb-6">Новые задачи</h2><input value={inputTitle} onChange={e => setInputTitle(e.target.value)} className="w-full p-6 bg-slate-50 rounded-2xl mb-4 font-bold text-center" placeholder="Тема" /><textarea value={inputText} onChange={e => setInputText(e.target.value)} className="w-full h-64 p-6 bg-slate-50 rounded-2xl mb-6 font-bold" placeholder="Задача [ТЕКСТ] Ответ [ЭТАЛОН]..." /><button onClick={handleSaveTasks} className="w-full bg-blue-600 text-white py-6 rounded-2xl font-black uppercase">Загрузить</button></div></div>;
 
-      case 'setup-tasks': return (
-        <div className="min-h-screen bg-slate-950 flex items-center justify-center p-4 text-center">
-            <div className="max-w-5xl w-full bg-white rounded-[4rem] p-12 sm:p-20 shadow-2xl relative text-center flex flex-col items-center">
-                <button onClick={() => setView('admin-tasks-list')} className="absolute top-12 left-12 text-slate-400 font-black uppercase text-[10px] flex items-center gap-3 hover:text-slate-900 transition-all self-start text-left"><ArrowLeft className="w-5 h-5" /> Назад</button>
-                <h2 className="text-4xl font-black text-slate-900 uppercase mb-2 tracking-tight text-center">Добавить задачи</h2>
-                <div className="space-y-6 text-left w-full mt-10">
-                    <input type="text" value={inputTitle} onChange={e => setInputTitle(e.target.value)} placeholder="Название раздела" className="w-full p-8 bg-slate-50 border-2 border-transparent rounded-3xl focus:bg-white focus:border-blue-600 font-bold text-slate-900 text-center uppercase text-xl placeholder:text-blue-200 text-center" />
-                    <textarea value={inputText} onChange={e => setInputText(e.target.value)} placeholder="Задача [ТЕКСТ] Ответ [ЭТАЛОН]..." className="w-full h-[400px] p-10 bg-slate-50 border-2 border-transparent rounded-[3rem] focus:bg-white focus:border-blue-600 outline-none resize-none font-bold text-slate-700 text-lg shadow-inner scrollbar-hide text-left" />
-                </div>
-                <button disabled={isLoading || !inputText || !inputTitle} onClick={handleSaveTasks} className="w-full mt-10 bg-blue-600 hover:bg-blue-700 text-white font-black py-8 rounded-[2.5rem] shadow-2xl active:scale-95 transition-all uppercase tracking-[0.2em] text-xl text-center">ЗАГРУЗИТЬ</button>
-            </div>
-        </div>
-      );
+      case 'student-select-test': return <div className="min-h-screen bg-slate-950 p-6 flex flex-col items-center"><div className="max-w-4xl w-full text-left"><button onClick={() => setView('menu')} className="mb-10 text-slate-400 font-black uppercase text-xs flex items-center gap-2"><ArrowLeft className="w-4 h-4" /> Назад</button><h2 className="text-white text-3xl font-black uppercase mb-8">Тесты</h2><div className="grid gap-4">{materials.filter(m => m.isVisible).map(m => <button key={m.id} onClick={() => { setActiveMaterial(m); setStudentAnswers([]); setCurrentQuestionIndex(0); setView('quiz'); }} className="bg-white/10 p-8 rounded-3xl border-2 border-slate-800 text-white font-black text-left flex justify-between items-center uppercase">{m.title}<ChevronRight className="text-slate-600"/></button>)}</div></div></div>;
 
-      case 'student-select-test': return (
-        <div className="min-h-screen bg-slate-950 p-6 flex flex-col items-center">
-          <div className="max-w-4xl w-full text-left text-left">
-            <button onClick={() => setView('menu')} className="text-slate-400 font-black text-[10px] uppercase mb-10 flex items-center gap-2 hover:text-white transition-colors text-left"><ChevronLeft className="w-4 h-4" /> Назад</button>
-            <h2 className="text-white text-4xl font-black mb-12 uppercase tracking-tight text-left">Доступные тесты</h2>
-            <div className="grid gap-4 text-left">
-              {materials.filter(m => m.isVisible).map(m => (
-                <button key={m.id} onClick={() => { setActiveMaterial(m); setStudentAnswers([]); setCurrentQuestionIndex(0); setView('quiz'); }} className="bg-slate-800/50 hover:bg-slate-800 p-8 rounded-[2rem] border-2 border-slate-700 flex items-center justify-between group transition-all text-left shadow-lg text-left">
-                  <div className="flex items-center gap-6 text-left">
-                    <div className="bg-emerald-500 p-4 rounded-2xl shadow-lg"><ClipboardList className="text-white w-6 h-6" /></div>
-                    <h4 className="text-white font-black text-xl uppercase tracking-tight text-left">{m.title}</h4>
-                  </div>
-                  <ChevronRight className="text-slate-600 group-hover:text-emerald-400" />
-                </button>
-              ))}
-              {materials.filter(m => m.isVisible).length === 0 && <p className="text-blue-300 font-bold text-center py-20 opacity-40 uppercase tracking-widest text-xs text-center">В данный момент активных тестов нет</p>}
-            </div>
-          </div>
-        </div>
-      );
+      case 'student-select-tasks': return <div className="min-h-screen bg-slate-950 p-6 flex flex-col items-center"><div className="max-w-4xl w-full text-left"><button onClick={() => setView('menu')} className="mb-10 text-slate-400 font-black uppercase text-xs flex items-center gap-2"><ArrowLeft className="w-4 h-4" /> Назад</button><h2 className="text-white text-3xl font-black uppercase mb-8">Задачи</h2><div className="grid gap-4">{taskSections.filter(t => t.isVisible).map(t => <button key={t.id} onClick={() => { setActiveTaskSection(t); setCurrentTaskIndex(0); setShowAnswerLocally(false); setView('task-viewer'); }} className="bg-white/10 p-8 rounded-3xl border-2 border-slate-800 text-white font-black text-left flex justify-between items-center uppercase">{t.title}<ChevronRight className="text-slate-600"/></button>)}</div></div></div>;
 
-      case 'student-select-tasks': return (
-        <div className="min-h-screen bg-slate-950 p-6 flex flex-col items-center">
-            <div className="max-w-4xl w-full text-left text-left">
-                <button onClick={() => setView('menu')} className="text-slate-400 font-black text-[10px] uppercase mb-10 flex items-center gap-2 hover:text-white transition-colors text-left"><ArrowLeft className="w-4 h-4" /> Назад</button>
-                <h2 className="text-white text-4xl font-black mb-12 uppercase tracking-tight text-left">Разделы задач</h2>
-                <div className="grid gap-4 text-left">
-                    {taskSections.filter(t => t.isVisible).map(t => (
-                        <button key={t.id} onClick={() => { setActiveTaskSection(t); setCurrentTaskIndex(0); setShowAnswerLocally(false); setView('task-viewer'); }} className="bg-slate-800/50 hover:bg-slate-800 p-8 rounded-[2rem] border-2 border-slate-700 flex items-center justify-between group transition-all text-left shadow-lg text-left">
-                            <div className="flex items-center gap-6 text-left">
-                              <div className="bg-blue-500 p-4 rounded-2xl shadow-lg"><Stethoscope className="text-white w-6 h-6" /></div>
-                              <h4 className="text-white font-black text-xl uppercase tracking-tight text-left">{t.title}</h4>
-                            </div>
-                            <ChevronRight className="text-slate-600 group-hover:text-blue-400" />
-                        </button>
-                    ))}
-                </div>
-            </div>
-        </div>
-      );
-
-      case 'quiz':
-        const q_quiz = activeMaterial?.questions[currentQuestionIndex];
+      case 'quiz': 
+        if (!activeMaterial) return null;
+        const q_quiz = activeMaterial.questions[currentQuestionIndex];
         const isAns_quiz = studentAnswers[currentQuestionIndex] !== undefined;
-        return (
-          <div className="min-h-screen bg-slate-950 flex flex-col items-center">
-            <div className="w-full bg-slate-800/80 p-5 border-b border-slate-700 flex justify-between px-10 text-white sticky top-0 z-50 backdrop-blur-lg">
-              <div className={`flex items-center gap-3 px-6 py-2 rounded-2xl font-black ${timeLeft < 60 ? 'bg-red-500 animate-pulse' : 'bg-slate-700'}`}>
-                <Clock className="w-5 h-5 text-center" /><span className="tabular-nums text-center">{formatTime(timeLeft)}</span>
-              </div>
-              <div className="font-black text-emerald-400 text-xl tracking-tighter">{currentQuestionIndex + 1} <span className="text-slate-500 font-normal">/ {activeMaterial.questions.length}</span></div>
-            </div>
-            <div className="max-w-4xl w-full p-6 flex-1 flex flex-col justify-center text-left">
-              <div className="bg-white rounded-[3.5rem] p-12 md:p-16 shadow-2xl relative mb-10 overflow-hidden text-left text-left">
-                <h2 className="text-2xl md:text-3xl font-bold text-slate-900 mb-12 leading-tight relative z-10 text-left">{q_quiz?.text}</h2>
-                <div className="grid gap-4 relative z-10 text-left text-left">
-                  {q_quiz?.options.map((opt, idx) => {
-                    const isSel = studentAnswers[currentQuestionIndex] === idx;
-                    const isCorr = idx === q_quiz.correctIndex;
-                    let cls = 'border-slate-100 bg-slate-50 text-slate-600 hover:border-emerald-400 transition-all text-left';
-                    if (isAns_quiz) {
-                      if (isSel) cls = isCorr ? 'border-emerald-500 bg-emerald-50 text-emerald-700 font-black scale-[1.02] text-left' : 'border-red-500 bg-red-50 text-red-700 font-black text-left';
-                      else cls = isCorr ? 'border-emerald-200 bg-emerald-50/50 text-emerald-700 text-left' : 'opacity-40 grayscale text-left';
-                    }
-                    return <button key={idx} disabled={isAns_quiz} onClick={() => { const a = [...studentAnswers]; a[currentQuestionIndex] = idx; setStudentAnswers(a); }} className={`w-full text-left p-6 md:p-8 rounded-2xl border-2 font-bold text-lg shadow-sm ${cls}`}>{opt}</button>
-                  })}
-                </div>
-              </div>
-              <div className="flex justify-between items-center px-4 w-full max-w-4xl">
-                <button disabled={currentQuestionIndex === 0} onClick={() => setCurrentQuestionIndex(p => p - 1)} className="text-slate-400 font-black uppercase text-xs flex items-center gap-2 hover:text-white transition-all text-left"><ArrowLeft className="w-4 h-4 text-left" /> Назад</button>
-                {currentQuestionIndex === (activeMaterial.questions.length - 1) 
-                  ? <button onClick={finishQuiz} disabled={!isAns_quiz} className="bg-emerald-600 text-white px-12 py-5 rounded-2xl font-black shadow-xl uppercase text-sm text-center">Завершить</button>
-                  : <button onClick={() => setCurrentQuestionIndex(p => p + 1)} disabled={!isAns_quiz} className="bg-blue-600 text-white px-12 py-5 rounded-2xl font-black shadow-xl uppercase text-sm flex items-center gap-3 text-center">Далее <ArrowRight className="w-5 h-5" /></button>
-                }
-              </div>
-            </div>
-          </div>
-        );
+        return <div className="min-h-screen bg-slate-950 flex flex-col items-center text-center"><div className="w-full p-5 bg-slate-900 border-b border-slate-800 flex justify-between px-10 text-white font-black tabular-nums"><span>{formatTime(timeLeft)}</span><span>{currentQuestionIndex + 1} / {activeMaterial.questions.length}</span></div><div className="max-w-4xl w-full p-6 flex-1 flex flex-col justify-center text-left"><div className="bg-white p-12 rounded-[4rem] shadow-2xl mb-8"><h2 className="text-2xl font-bold text-slate-900 mb-8">{q_quiz?.text}</h2><div className="grid gap-4">{q_quiz?.options.map((opt, idx) => { const isSel = studentAnswers[currentQuestionIndex] === idx; const isCorr = idx === q_quiz.correctIndex; let cls = 'bg-slate-50 border-2 border-slate-100 text-slate-600'; if (isAns_quiz) { if (isSel) cls = isCorr ? 'bg-emerald-50 border-emerald-500 text-emerald-700 font-black' : 'bg-red-50 border-red-500 text-red-700 font-black'; else cls = isCorr ? 'bg-emerald-50/50 border-emerald-200 text-emerald-700' : 'opacity-30 grayscale'; } return <button key={idx} disabled={isAns_quiz} onClick={() => { const a = [...studentAnswers]; a[currentQuestionIndex] = idx; setStudentAnswers(a); }} className={`w-full text-left p-6 rounded-2xl font-bold ${cls}`}>{opt}</button>})}</div></div><div className="flex justify-between px-4">{currentQuestionIndex === (activeMaterial.questions.length - 1) ? <button onClick={finishQuiz} disabled={!isAns_quiz} className="bg-emerald-600 text-white px-12 py-5 rounded-2xl font-black uppercase">Завершить</button> : <button onClick={() => setCurrentQuestionIndex(p => p + 1)} disabled={!isAns_quiz} className="bg-blue-600 text-white px-12 py-5 rounded-2xl font-black uppercase">Далее</button>}</div></div></div>;
 
       case 'task-viewer':
         if (!activeTaskSection) return null;
         const t_case = activeTaskSection.tasks[currentTaskIndex];
-        return (
-            <div className="min-h-screen bg-slate-950 flex flex-col items-center text-left text-left text-left">
-                <div className="w-full bg-slate-800/80 p-5 border-b border-slate-700 flex justify-between px-10 text-white uppercase font-black text-[10px] sticky top-0 z-50 backdrop-blur-lg text-center">
-                    <button onClick={() => setView('student-select-tasks')} className="bg-slate-700 p-2 rounded-xl text-center"><ArrowLeft className="w-5 h-5 text-white" /></button>
-                    <span className="truncate max-w-[250px] tracking-widest opacity-60 flex items-center text-center">{activeTaskSection.title}</span>
-                    <span className="text-blue-400 text-lg flex items-center text-center">{currentTaskIndex + 1} <span className="text-slate-500 mx-1 text-center">/</span> {activeTaskSection.tasks.length}</span>
-                </div>
-                <div className="max-w-5xl w-full p-6 flex-1 flex flex-col justify-center text-left text-left">
-                    <div className="bg-white rounded-[4rem] p-12 md:p-16 shadow-2xl min-h-[450px] relative text-left text-left text-left">
-                        <div className="flex items-center gap-3 mb-10 text-left">
-                          <span className="bg-blue-600 text-white px-6 py-2 rounded-2xl font-black text-xs uppercase shadow-lg text-left">Задача {t_case?.id}</span>
-                        </div>
-                        <p className="text-xl md:text-2xl font-bold text-slate-800 leading-relaxed whitespace-pre-wrap mb-12 text-left text-left">{t_case?.text}</p>
-                        {activeTaskSection.isAnswersEnabled && (
-                            <div className="mt-12 pt-12 border-t border-slate-50 text-left text-left">
-                                {showAnswerLocally 
-                                    ? <div className="bg-emerald-50 border-2 border-emerald-100 p-10 rounded-[2.5rem] animate-in slide-in-from-top-4 shadow-inner text-left text-left">
-                                        <p className="text-emerald-600 font-black uppercase text-[10px] mb-4 tracking-widest flex items-center gap-2 text-left text-left"><CheckCircle2 className="w-4 h-4 text-left text-left"/> Эталон ответа:</p>
-                                        <p className="text-emerald-900 font-bold text-xl leading-relaxed italic text-left text-left">{t_case?.answer}</p>
-                                      </div>
-                                    : <button onClick={() => setShowAnswerLocally(true)} className="w-full py-8 border-4 border-dashed border-emerald-100 text-emerald-600 rounded-[2.5rem] font-black uppercase text-sm hover:bg-emerald-50 transition-all flex items-center justify-center gap-4 text-center">
-                                        <Eye className="w-6 h-6 text-center" /> Показать ответ
-                                      </button>
-                                }
-                            </div>
-                        )}
-                    </div>
-                    <div className="flex justify-between items-center px-4 mt-10 text-left text-left">
-                        <button disabled={currentTaskIndex === 0} onClick={() => { setCurrentTaskIndex(p => p - 1); setShowAnswerLocally(false); }} className="bg-slate-800 p-6 rounded-3xl text-white font-black uppercase text-xs flex items-center gap-3 hover:bg-slate-700 shadow-xl text-left text-left"><ArrowLeft className="w-5 h-5 text-left" /> Назад</button>
-                        <button disabled={currentTaskIndex === activeTaskSection.tasks.length - 1} onClick={() => { setCurrentTaskIndex(p => p + 1); setShowAnswerLocally(false); }} className="bg-blue-600 p-6 rounded-3xl text-white font-black uppercase text-xs flex items-center gap-3 shadow-2xl active:scale-95 transition-all text-left text-left">Вперед <ArrowRight className="w-5 h-5 text-left" /></button>
-                    </div>
-                </div>
-            </div>
-        );
+        return <div className="min-h-screen bg-slate-950 flex flex-col items-center"><div className="w-full p-5 bg-slate-900 border-b border-slate-800 flex justify-between px-10 text-white font-black uppercase text-xs tracking-widest text-center"><button onClick={() => setView('student-select-tasks')} className="bg-slate-800 p-2 rounded-lg"><ArrowLeft className="w-4 h-4"/></button><span className="truncate max-w-[200px]">{activeTaskSection.title}</span><span>{currentTaskIndex + 1} / {activeTaskSection.tasks.length}</span></div><div className="max-w-4xl w-full p-6 flex-1 flex flex-col justify-center text-left text-left"><div className="bg-white p-12 rounded-[4rem] shadow-2xl"><p className="text-xl font-bold text-slate-800 leading-relaxed mb-8">{t_case?.text}</p>{activeTaskSection.isAnswersEnabled && (showAnswerLocally ? <div className="bg-emerald-50 border-2 border-emerald-100 p-10 rounded-[2.5rem] animate-in slide-in-from-top-4 shadow-inner text-left"><p className="text-emerald-900 font-bold text-xl italic">{t_case?.answer}</p></div> : <button onClick={() => setShowAnswerLocally(true)} className="w-full py-8 border-4 border-dashed border-emerald-100 text-emerald-600 rounded-[2.5rem] font-black uppercase text-xs">Показать эталон</button>)}</div><div className="flex justify-between mt-8"><button disabled={currentTaskIndex === 0} onClick={() => { setCurrentTaskIndex(p => p - 1); setShowAnswerLocally(false); }} className="bg-slate-800 p-6 rounded-3xl text-white font-black"><ArrowLeft className="w-4 h-4" /></button><button disabled={currentTaskIndex === activeTaskSection.tasks.length - 1} onClick={() => { setCurrentTaskIndex(p => p + 1); setShowAnswerLocally(false); }} className="bg-blue-600 p-6 rounded-3xl text-white font-black"><ArrowRight className="w-4 h-4" /></button></div></div></div>;
 
-      case 'result': return (
-        <div className="min-h-screen bg-slate-950 flex items-center justify-center p-4 text-center">
-          <div className="max-w-2xl w-full bg-white rounded-[5rem] p-20 shadow-2xl relative text-center flex flex-col items-center text-center">
-            <Trophy className="w-20 h-20 text-emerald-600 mx-auto mb-10 text-center" />
-            <h1 className="text-4xl font-black text-slate-900 mb-10 uppercase tracking-tighter text-center">Тест завершен</h1>
-            <div className="grid grid-cols-2 gap-8 mb-12 w-full text-center">
-              <div className="bg-emerald-50 p-10 rounded-[3rem] border border-emerald-100 shadow-sm text-center">
-                <p className="text-[10px] font-black text-emerald-400 uppercase mb-4 tracking-widest text-center">Баллы</p>
-                <p className="text-6xl font-black text-emerald-600 text-center">{(results[0]?.score || 0)} <span className="text-2xl text-emerald-300 font-normal text-center">/ {(results[0]?.total || 0)}</span></p>
-              </div>
-              <div className="bg-slate-50 p-10 rounded-[3rem] border border-slate-100 shadow-sm text-center">
-                <p className="text-[10px] font-black text-slate-400 uppercase mb-4 tracking-widest text-center text-center">Успех</p>
-                <p className="text-6xl font-black text-slate-900 text-center">{(results[0]?.percentage || 0)}%</p>
-              </div>
-            </div>
-            <button onClick={() => setView('menu')} className="w-full bg-slate-900 text-white font-black py-8 rounded-[2.5rem] shadow-2xl hover:bg-slate-800 transition-all uppercase active:scale-95 text-lg text-center">На главную</button>
-          </div>
-        </div>
-      );
+      case 'result': return <div className="min-h-screen bg-slate-950 flex items-center justify-center p-4 text-center"><div className="max-w-2xl w-full bg-white rounded-[5rem] p-20 shadow-2xl relative text-center flex flex-col items-center"><Trophy className="w-20 h-20 text-emerald-600 mb-10" /><h1 className="text-4xl font-black uppercase mb-10">Готово!</h1><div className="grid grid-cols-2 gap-8 mb-12 w-full text-center"><div className="bg-emerald-50 p-10 rounded-[3rem] border border-emerald-100"><p className="text-[10px] font-black text-emerald-400 uppercase mb-4">Баллы</p><p className="text-5xl font-black text-emerald-600">{(results[0]?.score || 0)}</p></div><div className="bg-slate-50 p-10 rounded-[3rem] border border-slate-100"><p className="text-[10px] font-black text-slate-400 uppercase mb-4">Успех</p><p className="text-5xl font-black text-slate-900">{(results[0]?.percentage || 0)}%</p></div></div><button onClick={() => setView('menu')} className="w-full bg-slate-900 text-white py-8 rounded-[2.5rem] font-black uppercase text-lg">На главную</button></div></div>;
 
       default: return null;
     }
@@ -549,7 +352,7 @@ const App = () => {
     <div className="font-sans antialiased text-left w-full min-h-screen flex flex-col selection:bg-emerald-100 bg-slate-950 items-center justify-center text-left">
       {renderCurrentView()}
       {toastMessage && (
-        <div className="fixed bottom-10 left-1/2 -translate-x-1/2 bg-slate-900 text-white px-12 py-6 rounded-[2.5rem] font-black shadow-2xl z-[100] border-2 border-slate-700 uppercase text-xs animate-in fade-in slide-in-from-bottom-4 text-center text-center text-center">
+        <div className="fixed bottom-10 left-1/2 -translate-x-1/2 bg-slate-900 text-white px-12 py-6 rounded-[2.5rem] font-black shadow-2xl z-[100] border-2 border-slate-700 uppercase text-xs animate-in fade-in slide-in-from-bottom-4 text-center">
           {toastMessage}
         </div>
       )}
