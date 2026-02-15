@@ -32,10 +32,7 @@ const firebaseConfig = {
 // ШАГ 2: НАСТРОЙКИ (ПАРОЛЬ И API)
 // =========================================================
 
-// ПАРОЛЬ АДМИНА
 const ADMIN_PASSWORD_SECRET = "601401"; 
-
-// КЛЮЧ GEMINI API
 const apiKeyGemini = "AIzaSyBNAhXT_kZKldXX1KJZBJ58Ey8nWCq_x84"; 
 
 // =========================================================
@@ -80,31 +77,24 @@ const App = () => {
   const [inputTitle, setInputTitle] = useState('');
   const [inputText, setInputText] = useState('');
 
-  // 1. Авторизация
   useEffect(() => {
     if (!isFirebaseReady || !auth) return;
     const unsubscribe = onAuthStateChanged(auth, (u) => {
-      if (!u) {
-        signInAnonymously(auth).catch(e => console.error("Auth error", e));
-      } else {
-        setUser(u);
-      }
+      if (!u) signInAnonymously(auth).catch(e => console.error("Auth error", e));
+      else setUser(u);
     });
     return () => unsubscribe();
   }, []);
 
-  // 2. Загрузка данных
   useEffect(() => {
     if (!user || !db) return;
     const mRef = collection(db, 'artifacts', PORTAL_ID, 'public', 'data', 'materials');
     const tRef = collection(db, 'artifacts', PORTAL_ID, 'public', 'data', 'task_sections');
-    
     const unsubM = onSnapshot(mRef, (s) => setMaterials(s.docs.map(d => ({ id: d.id, ...d.data() }))));
     const unsubT = onSnapshot(tRef, (s) => setTaskSections(s.docs.map(d => ({ id: d.id, ...d.data() }))));
     return () => { unsubM(); unsubT(); };
   }, [user]);
 
-  // 3. Результаты
   useEffect(() => {
     if (!user || !isAdminAuthenticated || !db) return;
     const rRef = collection(db, 'artifacts', PORTAL_ID, 'public', 'data', 'results');
@@ -115,7 +105,6 @@ const App = () => {
     return () => unsubscribe();
   }, [user, isAdminAuthenticated]);
 
-  // 4. Таймер
   useEffect(() => {
     if (view === 'quiz' && activeMaterial?.questions) {
       const totalSeconds = activeMaterial.questions.length * 120;
@@ -133,7 +122,7 @@ const App = () => {
 
   const showToast = (msg) => {
     setToastMessage(msg);
-    setTimeout(() => setToastMessage(null), 5000);
+    setTimeout(() => setToastMessage(null), 6000);
   };
 
   const formatTime = (s) => {
@@ -142,65 +131,53 @@ const App = () => {
     return `${min}:${sec < 10 ? '0' + sec : sec}`;
   };
 
-  // --- ИСПРАВЛЕННАЯ ЛОГИКА ИИ ---
   const handleGenerateTest = async (existing = null) => {
     const text = (existing ? existing.content : inputText) || "";
     const title = (existing ? existing.title : inputTitle) || "";
-    if (!text.trim() || !title.trim()) return showToast("Заполните название и текст!");
-    if (!apiKeyGemini) return showToast("Нужен API ключ!");
+    if (!text.trim() || !title.trim()) return showToast("Заполните поля!");
+    if (!apiKeyGemini) return showToast("Нужен ключ Gemini!");
     
     setIsLoading(true);
-    // Берем первые 7к символов для стабильности в бесплатном тарифе
-    const safeText = text.substring(0, 7000); 
+    // Лимит 120 000 символов
+    const safeText = text.substring(0, 120000); 
 
     try {
-      // ИСПОЛЬЗУЕМ gemini-1.5-flash БЕЗ ПРЕФИКСА models/ в теле (но в URL он нужен)
       const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKeyGemini}`;
       
-      const payload = { 
-        contents: [{ 
-            parts: [{ text: `LECTURE TEXT: ${safeText}\n\nTASK: Create 30 medical multiple choice questions based on this text. Output ONLY valid raw JSON array of objects. Format: [{"text": "Question?", "options": ["A", "B", "C", "D"], "correctIndex": 0}]` }] 
-        }],
-        generationConfig: { 
-            responseMimeType: "application/json",
-            temperature: 0.2
-        } 
-      };
+      const promptText = `Профессор медицины. Создай на основе текста ровно 30 тестовых вопросов (4 варианта, 1 верный). Ответ СТРОГО JSON: [{"text":"?","options":["A","B","C","D"],"correctIndex":0}]. ТЕКСТ: ${safeText}`;
 
       const res = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: promptText }] }],
+          generationConfig: { 
+            temperature: 0.1, 
+            responseMimeType: "application/json",
+            maxOutputTokens: 8192 
+          }
+        })
       });
 
-      if (res.status === 429) {
-          throw new Error("Лимит ИИ исчерпан. Google блокирует бесплатные запросы. Подождите 15 минут.");
+      if (!res.ok) {
+        if (res.status === 429) throw new Error("Квота превышена. Google блокирует бесплатные ключи при деплое. Создайте НОВЫЙ ключ на другой аккаунт Gmail.");
+        const errorData = await res.json();
+        throw new Error(errorData.error?.message || "Ошибка API");
       }
 
       const data = await res.json();
-      
-      if (data.error) {
-          if (data.error.message.includes("tier unavailable")) {
-              throw new Error("Ваш API ключ переведен в платный режим или заблокирован Google. Создайте новый ключ на aistudio.google.com");
-          }
-          throw new Error(data.error.message);
-      }
-
-      const rawContent = data.candidates?.[0]?.content?.parts?.[0]?.text;
-      if (!rawContent) throw new Error("ИИ вернул пустой ответ. Попробуйте сократить текст.");
-
-      const questions = JSON.parse(rawContent);
+      const questions = JSON.parse(data.candidates[0].content.parts[0].text);
       const id = existing ? existing.id : crypto.randomUUID();
       
       await setDoc(doc(db, 'artifacts', PORTAL_ID, 'public', 'data', 'materials', id), { 
         title, content: text, questions, updatedAt: Date.now(), isVisible: existing?.isVisible ?? false 
       });
       
-      showToast("Тест готов!");
+      showToast("Тест создан!");
       setView('admin-materials');
       setInputText(''); setInputTitle('');
     } catch (e) { 
-      console.error("AI Error:", e);
+      console.error(e);
       showToast("Ошибка: " + e.message); 
     } finally { setIsLoading(false); }
   };
@@ -219,12 +196,10 @@ const App = () => {
       });
       showToast("Задачи сохранены!");
       setView('admin-tasks-list');
-      setInputText(''); setInputTitle('');
-    } catch (e) { showToast("Ошибка сохранения"); } finally { setIsLoading(false); }
+    } catch (e) { showToast("Ошибка!"); } finally { setIsLoading(false); }
   };
 
   const finishQuiz = async () => {
-    clearInterval(timerRef.current);
     const score = studentAnswers.reduce((acc, ans, idx) => acc + (ans === activeMaterial.questions[idx].correctIndex ? 1 : 0), 0);
     const total = activeMaterial.questions.length;
     await addDoc(collection(db, 'artifacts', PORTAL_ID, 'public', 'data', 'results'), { 
@@ -234,89 +209,75 @@ const App = () => {
   };
 
   const renderCurrentView = () => {
-    if (!isFirebaseReady) return <div className="min-h-screen w-full flex items-center justify-center bg-slate-950 text-white p-10 text-center">Настройте Firebase в коде (firebaseConfig).</div>;
-    if (!user) return <div className="min-h-screen w-full flex items-center justify-center bg-slate-950 text-white font-black animate-pulse uppercase tracking-[0.3em]">Подключение...</div>;
+    if (!isFirebaseReady) return <div className="flex items-center justify-center text-white">Firebase Error</div>;
+    if (!user) return <div className="flex items-center justify-center text-white animate-pulse">ВХОД...</div>;
 
     switch (view) {
       case 'welcome': return (
-        <div className="min-h-screen w-full bg-slate-950 flex items-center justify-center p-4">
+        <div className="flex-1 flex items-center justify-center p-4">
           <div className="max-w-md w-full bg-white rounded-[2.5rem] p-10 shadow-2xl text-center">
-            <div className="bg-emerald-500 w-16 h-16 rounded-2xl mx-auto mb-6 flex items-center justify-center shadow-xl shadow-emerald-500/20"><GraduationCap className="text-white w-10 h-10" /></div>
-            <h1 className="text-3xl font-black text-slate-900 mb-2 uppercase tracking-tight">Госпитальная хирургия</h1>
-            <p className="text-slate-400 font-bold text-[10px] uppercase tracking-widest mb-10 opacity-70">Аттестационный портал</p>
-            <div className="space-y-4">
-              <input type="text" value={studentName} onChange={(e) => setStudentName(e.target.value)} placeholder="ФИО студента" className="w-full p-5 bg-slate-50 border-2 border-slate-100 rounded-2xl outline-none focus:border-emerald-500 focus:bg-white font-bold text-slate-800 text-center transition-all" />
-              <button disabled={!studentName} onClick={() => setView('menu')} className="w-full bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-200 text-white font-black py-5 rounded-2xl shadow-lg active:scale-95 transition-all uppercase tracking-widest text-sm">Войти в систему</button>
-              <button onClick={() => setView('admin-login')} className="text-slate-400 hover:text-emerald-600 text-[10px] font-black uppercase mt-4 block w-full tracking-widest">Панель управления</button>
-            </div>
+            <div className="bg-emerald-500 w-16 h-16 rounded-2xl mx-auto mb-6 flex items-center justify-center shadow-xl"><GraduationCap className="text-white w-10 h-10" /></div>
+            <h1 className="text-2xl font-black text-slate-900 mb-2 uppercase">Госпитальная хирургия</h1>
+            <p className="text-slate-400 text-[10px] uppercase mb-10">Аттестационный портал</p>
+            <input type="text" value={studentName} onChange={(e) => setStudentName(e.target.value)} placeholder="ФИО студента" className="w-full p-5 bg-slate-50 border-2 rounded-2xl mb-6 font-bold text-center" />
+            <button disabled={!studentName} onClick={() => setView('menu')} className="w-full bg-emerald-600 text-white font-black py-5 rounded-2xl shadow-lg active:scale-95 uppercase text-sm">Войти</button>
+            <button onClick={() => setView('admin-login')} className="text-slate-400 hover:text-emerald-600 text-[9px] font-black uppercase mt-6 block w-full">Админка</button>
           </div>
         </div>
       );
 
       case 'menu': return (
-        <div className="min-h-screen w-full bg-slate-950 flex flex-col items-center justify-center p-4 gap-12 text-center">
-          <h2 className="text-white text-4xl font-black uppercase tracking-tighter">Выберите раздел</h2>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-8 w-full max-w-4xl text-left">
-            <button onClick={() => setView('student-select-test')} className="bg-white p-12 rounded-[3.5rem] shadow-2xl border-4 border-transparent hover:border-emerald-500 transition-all group">
-              <div className="bg-emerald-100 w-16 h-16 rounded-2xl flex items-center justify-center mb-8 group-hover:scale-110 transition-transform"><ClipboardList className="text-emerald-600 w-8 h-8" /></div>
-              <h3 className="text-2xl font-black text-slate-900 uppercase leading-none">Тестирование</h3>
-              <p className="text-slate-400 font-bold text-xs uppercase mt-3 text-left">Контроль по протоколам</p>
+        <div className="flex-1 flex flex-col items-center justify-center p-4 gap-12">
+          <h2 className="text-white text-3xl font-black uppercase text-center">Хирургия</h2>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-8 w-full max-w-4xl">
+            <button onClick={() => setView('student-select-test')} className="bg-white p-12 rounded-[3.5rem] shadow-2xl hover:border-emerald-500 border-4 transition-all">
+              <ClipboardList className="text-emerald-600 w-12 h-12 mb-8 mx-auto" />
+              <h3 className="text-xl font-black text-slate-900 uppercase">Тестирование</h3>
             </button>
-            <button onClick={() => setView('student-select-tasks')} className="bg-white p-12 rounded-[3.5rem] shadow-2xl border-4 border-transparent hover:border-blue-500 transition-all group">
-              <div className="bg-blue-100 w-16 h-16 rounded-2xl flex items-center justify-center mb-8 group-hover:scale-110 transition-transform"><Stethoscope className="text-blue-600 w-8 h-8" /></div>
-              <h3 className="text-2xl font-black text-slate-900 uppercase leading-none">Задачи</h3>
-              <p className="text-slate-400 font-bold text-xs uppercase mt-3 text-left">Клинические кейсы</p>
+            <button onClick={() => setView('student-select-tasks')} className="bg-white p-12 rounded-[3.5rem] shadow-2xl hover:border-blue-500 border-4 transition-all">
+              <Stethoscope className="text-blue-600 w-12 h-12 mb-8 mx-auto" />
+              <h3 className="text-xl font-black text-slate-900 uppercase">Задачи</h3>
             </button>
           </div>
-          <button onClick={() => setView('welcome')} className="text-slate-500 hover:text-white uppercase font-black text-xs tracking-[0.3em] flex items-center gap-2 transition-colors"><ArrowLeft className="w-4 h-4"/> Выход</button>
+          <button onClick={() => setView('welcome')} className="text-slate-500 font-black uppercase text-xs">Выход</button>
         </div>
       );
 
       case 'admin-login': return (
-        <div className="min-h-screen w-full bg-slate-950 flex items-center justify-center p-4 text-center">
-          <div className="max-w-md w-full bg-white rounded-[3rem] p-12 shadow-2xl">
+        <div className="flex-1 flex items-center justify-center p-4">
+          <div className="max-w-md w-full bg-white rounded-[3rem] p-12 shadow-2xl text-center">
             <ShieldCheck className="w-16 h-16 text-slate-900 mx-auto mb-10" />
-            <h2 className="text-2xl font-black text-slate-900 uppercase mb-10 tracking-widest">Вход для админа</h2>
-            <input type="password" value={adminPassword} onChange={(e) => setAdminPassword(e.target.value)} placeholder="••••" className="w-full p-6 bg-slate-50 border-2 border-slate-100 rounded-2xl outline-none focus:border-slate-900 font-black text-center text-slate-900 tracking-[1em] text-3xl mb-10 shadow-inner" />
-            <button 
-              onClick={() => adminPassword === ADMIN_PASSWORD_SECRET ? (setIsAdminAuthenticated(true), setView('admin')) : showToast("Код неверен")} 
-              className="w-full bg-slate-900 text-white py-6 rounded-2xl font-black uppercase shadow-xl active:scale-95 transition-all text-xs tracking-widest text-center"
-            >
-              Войти в систему
-            </button>
-            <button onClick={() => setView('welcome')} className="text-slate-400 font-black uppercase text-[10px] mt-8 block w-full tracking-widest hover:text-slate-900 text-center">Отмена</button>
+            <input type="password" value={adminPassword} onChange={(e) => setAdminPassword(e.target.value)} placeholder="••••" className="w-full p-6 bg-slate-50 rounded-2xl font-black text-center text-3xl mb-10" />
+            <button onClick={() => adminPassword === ADMIN_PASSWORD_SECRET ? (setIsAdminAuthenticated(true), setView('admin')) : showToast("Неверно")} className="w-full bg-slate-900 text-white py-6 rounded-2xl font-black uppercase">Войти</button>
+            <button onClick={() => setView('welcome')} className="text-slate-400 mt-8 block w-full text-xs uppercase">Отмена</button>
           </div>
         </div>
       );
 
       case 'admin': return (
-        <div className="min-h-screen w-full bg-slate-50 p-6 md:p-12 text-left">
+        <div className="flex-1 bg-slate-50 p-6 md:p-12">
           <div className="max-w-7xl mx-auto">
-            <div className="flex flex-col md:flex-row justify-between items-center gap-10 mb-16 text-center md:text-left">
-              <div className="text-left text-left"><h1 className="text-5xl font-black text-slate-900 uppercase leading-none tracking-tighter text-left">Панель контроля</h1><p className="text-emerald-600 font-black uppercase text-[10px] mt-4 tracking-widest text-left">Госпитальная хирургия</p></div>
-              <div className="flex flex-wrap gap-4 justify-center">
-                <button onClick={() => setView('admin-tasks-list')} className="bg-blue-600 text-white px-8 py-5 rounded-[2rem] text-[10px] font-black uppercase flex items-center gap-3 shadow-lg hover:bg-blue-700 transition-all text-center"><Stethoscope className="w-5 h-5 text-center" /> Задачи</button>
-                <button onClick={() => setView('admin-materials')} className="bg-white text-slate-900 border-2 border-slate-200 px-8 py-5 rounded-[2rem] text-[10px] font-black uppercase flex items-center gap-3 shadow-sm hover:bg-slate-50 transition-all text-center"><ClipboardList className="w-5 h-5" /> Тесты</button>
-                <button onClick={() => setView('setup-test')} className="bg-emerald-600 text-white px-8 py-5 rounded-[2rem] text-[10px] font-black uppercase flex items-center gap-3 shadow-xl hover:bg-emerald-700 transition-all text-center"><Plus className="w-5 h-5" /> Новый тест</button>
-                <button onClick={() => {setIsAdminAuthenticated(false); setView('welcome');}} className="bg-white text-slate-400 px-6 py-5 rounded-xl text-[10px] font-black border-2 border-slate-100 text-center">Выход</button>
+            <div className="flex justify-between items-center mb-16">
+              <h1 className="text-4xl font-black text-slate-900 uppercase">Управление</h1>
+              <div className="flex gap-4">
+                <button onClick={() => setView('admin-tasks-list')} className="bg-blue-600 text-white px-8 py-4 rounded-2xl text-xs font-black uppercase">Задачи</button>
+                <button onClick={() => setView('admin-materials')} className="bg-white text-slate-900 border-2 px-8 py-4 rounded-2xl text-xs font-black uppercase">Тесты</button>
+                <button onClick={() => setView('setup-test')} className="bg-emerald-600 text-white px-8 py-4 rounded-2xl text-xs font-black uppercase">Новый тест</button>
+                <button onClick={() => {setIsAdminAuthenticated(false); setView('welcome');}} className="bg-white text-slate-400 px-6 py-4 rounded-xl text-xs font-black border-2 hover:text-red-500">Выход</button>
               </div>
             </div>
-            <div className="bg-white rounded-[4rem] shadow-xl overflow-hidden border border-slate-100 text-left text-left">
-              <div className="p-10 bg-slate-50/50 border-b border-slate-100 text-center font-black text-slate-900 uppercase text-xs tracking-[0.3em] text-center text-center">Результаты аттестации</div>
-              <div className="overflow-x-auto text-left text-left">
-                <table className="w-full text-left min-w-[950px] text-left text-left">
-                  <thead className="bg-slate-900 text-slate-400 text-[10px] uppercase font-black tracking-widest text-left text-left">
-                    <tr><th className="px-10 py-8 text-left text-left">Курсант / Дата</th><th className="px-10 py-8 text-left text-left">Тема</th><th className="px-10 py-8 text-center text-center">Результат %</th><th className="px-10 py-8 text-center text-center">Ошибки</th><th className="px-10 py-8 text-center text-center">Время</th><th className="px-10 py-8 text-right text-right">Статус</th></tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-50 text-sm font-bold text-left text-left">
+            <div className="bg-white rounded-[4rem] shadow-xl overflow-hidden border">
+              <div className="p-10 border-b font-black uppercase text-xs text-center">Журнал результатов</div>
+              <div className="overflow-x-auto p-10">
+                <table className="w-full text-left">
+                  <thead><tr className="text-slate-400 text-[10px] uppercase font-black border-b"><th className="pb-4">Студент</th><th className="pb-4">Тема</th><th className="pb-4 text-center">Результат</th><th className="pb-4 text-right">Статус</th></tr></thead>
+                  <tbody>
                     {results.map(r => (
-                      <tr key={r.id} className="hover:bg-slate-50 transition-all group text-left text-left">
-                        <td className="px-10 py-8 text-left text-left"><div className="flex items-center gap-5 text-left text-left"><div className={`w-14 h-14 rounded-[1.2rem] flex items-center justify-center font-black text-xl border-2 ${r.percentage >= 70 ? 'border-emerald-100 bg-emerald-50 text-emerald-600' : 'border-red-100 bg-red-50 text-red-600'}`}>{r.studentName?.charAt(0)}</div><div className="text-left text-left"><p className="font-black text-slate-900 text-lg uppercase text-left text-left">{r.studentName}</p><p className="text-[10px] font-bold text-slate-400 uppercase text-left text-left">{r.dateString}</p></div></div></td>
-                        <td className="px-10 py-8 text-slate-600 uppercase truncate max-w-[200px] text-left text-left">{r.materialTitle}</td>
-                        <td className="px-10 py-8 text-center font-black text-3xl text-slate-900 text-center text-center">{r.percentage}%</td>
-                        <td className="px-10 py-8 text-center font-black text-red-500 text-lg text-center text-center text-center">{(r.total || 0) - (r.score || 0)} <span className="text-slate-300 font-normal text-xs ml-1 text-center text-center">из {r.total}</span></td>
-                        <td className="px-10 py-8 text-center font-black text-slate-500 tabular-nums text-center text-center">{r.spentTime}</td>
-                        <td className="px-10 py-8 text-right text-right text-right text-right"><span className={`inline-block px-6 py-3 rounded-2xl text-[10px] font-black uppercase tracking-widest shadow-sm ${r.percentage >= 70 ? 'bg-emerald-600 text-white' : 'bg-red-500 text-white'}`}>{r.percentage >= 70 ? 'Зачет' : 'Незачет'}</span></td>
+                      <tr key={r.id} className="border-b hover:bg-slate-50">
+                        <td className="py-6 font-black uppercase">{r.studentName}</td>
+                        <td className="py-6 text-slate-600 truncate max-w-[200px]">{r.materialTitle}</td>
+                        <td className="py-6 text-center font-black text-2xl">{r.percentage}%</td>
+                        <td className="py-6 text-right"><span className={`px-4 py-2 rounded-xl text-[10px] font-black uppercase ${r.percentage >= 70 ? 'bg-emerald-600 text-white' : 'bg-red-500 text-white'}`}>{r.percentage >= 70 ? 'Зачет' : 'Незачет'}</span></td>
                       </tr>
                     ))}
                   </tbody>
@@ -328,52 +289,41 @@ const App = () => {
       );
 
       case 'admin-materials': return (
-        <div className="min-h-screen w-full bg-slate-50 p-6 md:p-12 text-left">
-            <div className="max-w-6xl w-full mx-auto text-left text-left">
-                <button onClick={() => setView('admin')} className="text-slate-400 font-black text-[10px] uppercase mb-12 flex items-center gap-3 hover:text-slate-900 transition-all text-left text-left"><ArrowLeft className="w-5 h-5" /> Назад</button>
-                <h2 className="text-4xl font-black text-slate-900 uppercase mb-16 tracking-tighter text-left text-left">Библиотека тестов</h2>
-                <div className="grid gap-6">
-                    {materials.map(m => (
-                        <div key={m.id} className="bg-white border border-slate-100 rounded-[3rem] p-10 shadow-xl flex flex-col md:flex-row justify-between items-center gap-10 group hover:border-emerald-300 transition-all text-left text-left">
-                            <div className="flex items-center gap-8 flex-1 text-left text-left">
-                                <div onClick={() => updateDoc(doc(db, 'artifacts', PORTAL_ID, 'public', 'data', 'materials', m.id), { isVisible: !m.isVisible })} className={`cursor-pointer w-20 h-20 rounded-[2rem] flex items-center justify-center transition-all ${m.isVisible ? 'bg-emerald-500 text-white shadow-xl shadow-emerald-500/20' : 'bg-slate-100 text-slate-400 border-2 border-slate-200'} hover:scale-105 active:scale-95 text-center text-center`}>
-                                    {m.isVisible ? <Unlock className="w-8 h-8 text-center text-center" /> : <Lock className="w-8 h-8 text-center text-center" />}
-                                </div>
-                                <div className="text-left"><h4 className="font-black text-2xl text-slate-900 uppercase leading-none mb-4 text-left text-left">{m.title}</h4><div className="flex gap-6 items-center text-left text-left"><span className="text-[10px] font-black text-slate-400 uppercase text-left text-left">{m.questions?.length} вопросов</span><span className={`text-[10px] font-black uppercase px-3 py-1 rounded-lg ${m.isVisible ? 'bg-emerald-50 text-emerald-600' : 'bg-red-50 text-red-500'}`}>{m.isVisible ? "ОТКРЫТ" : "СКРЫТ"}</span></div></div>
-                            </div>
-                            <div className="flex items-center gap-4 text-right text-right">
-                                <button disabled={isLoading} onClick={() => handleGenerateTest(m)} className="px-8 py-5 bg-slate-100 text-slate-600 rounded-[1.5rem] font-black text-[10px] uppercase flex items-center gap-3 active:scale-95 hover:bg-emerald-50 border border-slate-200 text-center text-center">{isLoading ? <Loader2 className="animate-spin w-4 h-4 text-center text-center"/> : <RefreshCw className="w-4 h-4 text-center text-center"/>} ОБНОВИТЬ ИИ</button>
-                                <button onClick={() => { if(confirm("Удалить этот тест?")) deleteDoc(doc(db, 'artifacts', PORTAL_ID, 'public', 'data', 'materials', m.id)); }} className="p-6 bg-red-50 text-red-500 rounded-[1.5rem] hover:bg-red-500 hover:text-white transition-all text-center text-center"><Trash2 className="w-6 h-6 text-center text-center" /></button>
-                            </div>
-                        </div>
-                    ))}
+        <div className="flex-1 bg-slate-50 p-6 md:p-12">
+            <div className="max-w-6xl mx-auto">
+                <button onClick={() => setView('admin')} className="text-slate-400 font-black mb-10 flex items-center gap-2"><ArrowLeft className="w-4 h-4" /> Назад</button>
+                <h2 className="text-3xl font-black mb-12 uppercase">Библиотека тестов</h2>
+                <div className="space-y-4">
+                  {materials.map(m => (
+                    <div key={m.id} className="bg-white p-8 rounded-[3rem] shadow-lg flex justify-between items-center border hover:border-emerald-300">
+                      <div><h4 className="font-black text-xl uppercase">{m.title}</h4><p className="text-slate-400 text-xs font-bold">{m.questions?.length} вопросов</p></div>
+                      <div className="flex gap-4">
+                        <button onClick={() => updateDoc(doc(db, 'artifacts', PORTAL_ID, 'public', 'data', 'materials', m.id), { isVisible: !m.isVisible })} className={`p-4 rounded-2xl ${m.isVisible ? 'bg-emerald-100 text-emerald-600' : 'bg-red-50 text-red-400'}`}>{m.isVisible ? <Unlock /> : <Lock />}</button>
+                        <button onClick={() => { if(confirm("Удалить?")) deleteDoc(doc(db, 'artifacts', PORTAL_ID, 'public', 'data', 'materials', m.id)); }} className="p-4 bg-red-50 text-red-400 rounded-2xl"><Trash2 /></button>
+                      </div>
+                    </div>
+                  ))}
                 </div>
             </div>
         </div>
       );
 
       case 'admin-tasks-list': return (
-        <div className="min-h-screen w-full bg-slate-50 p-6 md:p-12 text-left">
-            <div className="max-w-6xl w-full mx-auto text-left text-left">
-                <button onClick={() => setView('admin')} className="text-slate-400 font-black text-[10px] uppercase mb-12 flex items-center gap-3 hover:text-slate-900 transition-all text-left text-left"><ArrowLeft className="w-5 h-5" /> Назад</button>
-                <div className="flex justify-between items-center mb-16 text-left text-left">
-                  <h2 className="text-4xl font-black text-slate-900 uppercase tracking-tighter text-left text-left">Библиотека задач</h2>
-                  <button onClick={() => setView('setup-tasks')} className="bg-slate-900 text-white px-10 py-5 rounded-[2rem] font-black text-xs uppercase flex items-center gap-3 active:scale-95 shadow-2xl transition-all text-center text-center"><Plus className="w-5 h-5 text-center text-center" /> Добавить задачи</button>
+        <div className="flex-1 bg-slate-50 p-6 md:p-12">
+            <div className="max-w-6xl mx-auto">
+                <button onClick={() => setView('admin')} className="text-slate-400 font-black mb-10 flex items-center gap-2"><ArrowLeft className="w-4 h-4" /> Назад</button>
+                <div className="flex justify-between items-center mb-12">
+                  <h2 className="text-3xl font-black uppercase">База задач</h2>
+                  <button onClick={() => setView('setup-tasks')} className="bg-slate-900 text-white px-10 py-4 rounded-2xl font-black text-xs uppercase">Добавить</button>
                 </div>
-                <div className="grid gap-6">
+                <div className="space-y-4">
                     {taskSections.map(s => (
-                        <div key={s.id} className="bg-white border border-slate-100 rounded-[3rem] p-10 shadow-xl flex flex-col md:flex-row justify-between items-center gap-10 group hover:border-blue-300 transition-all text-left text-left">
-                            <div className="flex items-center gap-8 flex-1 text-left text-left">
-                                <div onClick={() => updateDoc(doc(db, 'artifacts', PORTAL_ID, 'public', 'data', 'task_sections', s.id), { isVisible: !s.isVisible })} className={`cursor-pointer w-20 h-20 rounded-[2rem] flex items-center justify-center transition-all ${s.isVisible ? 'bg-blue-600 text-white shadow-xl shadow-blue-500/20' : 'bg-slate-100 text-slate-400 border-2 border-slate-200'} hover:scale-105 active:scale-95 text-center text-center`}>
-                                    {s.isVisible ? <Unlock className="w-8 h-8 text-center text-center" /> : <Lock className="w-8 h-8 text-center text-center" />}
-                                </div>
-                                <div className="text-left text-left text-left"><h4 className="font-black text-2xl text-slate-900 uppercase leading-none mb-4 text-left text-left">{s.title}</h4><div className="flex gap-6 items-center text-left text-left text-left"><span className="text-[10px] font-black text-slate-400 uppercase text-left text-left">{s.tasks?.length} задач</span><span className={`text-[10px] font-black uppercase px-3 py-1 rounded-lg ${s.isAnswersEnabled ? 'bg-blue-50 text-blue-600' : 'bg-slate-50 text-slate-300'}`}>{s.isAnswersEnabled ? "ОТВЕТЫ ВКЛЮЧЕНЫ" : "ОТВЕТЫ ВЫКЛЮЧЕНЫ"}</span></div></div>
-                            </div>
-                            <div className="flex items-center gap-4 text-right text-right">
-                                <button onClick={() => updateDoc(doc(db, 'artifacts', PORTAL_ID, 'public', 'data', 'task_sections', s.id), { isAnswersEnabled: !s.isAnswersEnabled })} className={`p-6 rounded-2xl transition-all ${s.isAnswersEnabled ? 'bg-emerald-500 text-white shadow-lg' : 'bg-slate-100 text-slate-400 hover:bg-slate-200'} text-center text-center`}>
-                                  {s.isAnswersEnabled ? <Eye className="w-6 h-6 text-center text-center" /> : <EyeOff className="w-6 h-6 text-center text-center" />}
-                                </button>
-                                <button onClick={() => { if(confirm("Удалить блок задач?")) deleteDoc(doc(db, 'artifacts', PORTAL_ID, 'public', 'data', 'task_sections', s.id)); }} className="p-6 bg-red-50 text-red-500 rounded-2xl hover:bg-red-500 hover:text-white transition-all text-center text-center"><Trash2 className="w-6 h-6 text-center text-center" /></button>
+                        <div key={s.id} className="bg-white p-8 rounded-[3rem] shadow-xl border flex justify-between items-center">
+                            <div className="text-left"><h4 className="font-black text-xl uppercase">{s.title}</h4><p className="text-slate-400 text-xs">{s.tasks?.length} задач</p></div>
+                            <div className="flex gap-4">
+                                <button onClick={() => updateDoc(doc(db, 'artifacts', PORTAL_ID, 'public', 'data', 'task_sections', s.id), { isVisible: !s.isVisible })} className={`p-4 rounded-2xl ${s.isVisible ? 'bg-blue-600 text-white' : 'bg-red-50 text-red-400'}`}>{s.isVisible ? <Unlock /> : <Lock />}</button>
+                                <button onClick={() => updateDoc(doc(db, 'artifacts', PORTAL_ID, 'public', 'data', 'task_sections', s.id), { isAnswersEnabled: !s.isAnswersEnabled })} className={`p-4 rounded-2xl ${s.isAnswersEnabled ? 'bg-emerald-500 text-white' : 'bg-slate-100'}`}><Eye /></button>
+                                <button onClick={() => { if(confirm("Удалить?")) deleteDoc(doc(db, 'artifacts', PORTAL_ID, 'public', 'data', 'task_sections', s.id)); }} className="p-4 bg-red-50 text-red-500 rounded-2xl"><Trash2 /></button>
                             </div>
                         </div>
                     ))}
@@ -383,122 +333,74 @@ const App = () => {
       );
 
       case 'setup-test': return (
-        <div className="min-h-screen bg-slate-900 flex items-center justify-center p-4 text-center text-center text-center">
-            <div className="max-w-5xl w-full bg-white rounded-[4rem] p-12 sm:p-20 shadow-2xl relative text-center animate-in slide-in-from-bottom-10 text-center text-center text-center text-center text-center">
-                <button onClick={() => setView('admin')} className="absolute top-12 left-12 text-slate-400 font-black uppercase text-[10px] flex items-center gap-3 hover:text-slate-900 transition-all text-left text-left text-left text-left"><ArrowLeft className="w-5 h-5 text-left text-left text-left" /> Назад</button>
-                <div className="bg-emerald-100 w-24 h-24 rounded-3xl flex items-center justify-center mx-auto mb-10 text-center text-center text-center text-center text-center text-center"><Plus className="w-12 h-12 text-emerald-600 text-center text-center text-center text-center text-center text-center text-center"/></div>
-                <h2 className="text-4xl font-black text-slate-900 uppercase mb-2 tracking-tight text-center text-center text-center text-center text-center">Создание ИИ Теста</h2>
-                <p className="text-slate-400 font-bold uppercase text-[10px] tracking-widest mb-12 text-center text-center text-center text-center">Вставьте текст лекции, и нейросеть создаст 30 вопросов</p>
-                <div className="space-y-6 text-left text-left text-left text-left text-left text-left">
-                    <input type="text" value={inputTitle} onChange={e => setInputTitle(e.target.value)} placeholder="Тема теста" className="w-full p-8 bg-slate-50 border-2 border-slate-100 rounded-3xl focus:bg-white focus:border-emerald-600 font-bold text-slate-900 text-center uppercase shadow-inner text-xl placeholder:text-slate-300 text-center text-center text-center text-center text-center text-center" />
-                    <textarea value={inputText} onChange={e => setInputText(e.target.value)} placeholder="Вставьте учебный материал..." className="w-full h-[400px] p-10 bg-slate-50 border-2 border-slate-100 rounded-[3rem] focus:bg-white focus:border-emerald-600 outline-none resize-none font-bold text-slate-700 text-lg shadow-inner scrollbar-hide text-left text-left text-left text-left text-left text-left text-left text-left text-left" />
-                </div>
-                <button disabled={isLoading || !inputText || !inputTitle} onClick={() => handleGenerateTest()} className="w-full mt-10 bg-emerald-600 hover:bg-emerald-500 text-white font-black py-8 rounded-[2.5rem] shadow-2xl active:scale-95 transition-all uppercase tracking-[0.2em] shadow-emerald-500/20 text-xl flex items-center justify-center gap-6 text-center text-center text-center text-center text-center text-center text-center text-center">
-                  {isLoading ? <Loader2 className="animate-spin w-8 h-8 text-center text-center text-center text-center text-center text-center text-center"/> : <RefreshCw className="w-8 h-8 text-center text-center text-center text-center text-center text-center text-center"/>} 
-                  {isLoading ? "ГЕНЕРАЦИЯ (30-60 сек)..." : "СФОРМИРОВАТЬ ТЕСТ"}
-                </button>
-            </div>
-        </div>
-      );
-
-      case 'setup-tasks': return (
-        <div className="min-h-screen bg-slate-900 flex items-center justify-center p-4 text-center text-center text-center text-center">
-            <div className="max-w-5xl w-full bg-white rounded-[4rem] p-12 sm:p-20 shadow-2xl relative text-center animate-in slide-in-from-bottom-10 text-center text-center text-center text-center text-center text-center text-center">
-                <button onClick={() => setView('admin-tasks-list')} className="absolute top-12 left-12 text-slate-400 font-black uppercase text-[10px] flex items-center gap-3 hover:text-slate-900 transition-all text-left text-left text-left text-left text-left text-left text-left text-left text-left text-left"><ArrowLeft className="w-5 h-5 text-left text-left text-left text-left text-left text-left text-left text-left text-left text-left" /> Назад</button>
-                <div className="bg-blue-100 w-24 h-24 rounded-3xl flex items-center justify-center mx-auto mb-10 text-center text-center text-center text-center text-center text-center text-center text-center text-center text-center"><Stethoscope className="w-12 h-12 text-blue-600 text-center text-center text-center text-center text-center text-center text-center text-center text-center text-center text-center text-center text-center text-center"/></div>
-                <h2 className="text-4xl font-black text-slate-900 uppercase mb-2 tracking-tight text-center text-center text-center text-center text-center text-center text-center text-center text-center text-center">Новый раздел задач</h2>
-                <p className="text-slate-400 font-bold uppercase text-[10px] tracking-widest mb-12 text-center text-center text-center text-center text-center text-center text-center text-center text-center text-center">Добавьте ситуационные задачи с эталонами ответов</p>
-                <div className="space-y-6 text-left text-left text-left text-left text-left text-left text-left text-left text-left text-left">
-                    <input type="text" value={inputTitle} onChange={e => setInputTitle(e.target.value)} placeholder="Название раздела" className="w-full p-8 bg-slate-50 border-2 border-slate-100 rounded-3xl focus:bg-white focus:border-blue-600 font-bold text-slate-900 text-center uppercase shadow-inner text-xl placeholder:text-slate-300 text-center text-center text-center text-center text-center text-center text-center text-center text-center text-center" />
-                    <textarea value={inputText} onChange={e => setInputText(e.target.value)} placeholder="Задача [ТЕКСТ] Ответ [ЭТАЛОН]..." className="w-full h-[400px] p-10 bg-slate-50 border-2 border-slate-100 rounded-[3rem] focus:bg-white focus:border-blue-600 outline-none resize-none font-bold text-slate-700 text-lg shadow-inner scrollbar-hide text-left text-left text-left text-left text-left text-left text-left text-left text-left text-left text-left text-left text-left text-left" />
-                </div>
-                <button disabled={isLoading || !inputText || !inputTitle} onClick={handleSaveTasks} className="w-full mt-10 bg-blue-600 hover:bg-blue-700 text-white font-black py-8 rounded-[2.5rem] shadow-2xl active:scale-95 transition-all uppercase tracking-[0.2em] text-xl text-center text-center text-center text-center text-center text-center text-center text-center text-center text-center text-center text-center text-center text-center text-center text-center text-center">ЗАГРУЗИТЬ В БАЗУ ДАННЫХ</button>
-            </div>
-        </div>
-      );
-
-      case 'student-select-test': return (
-        <div className="min-h-screen w-full bg-slate-950 p-6 flex flex-col items-center text-left text-left text-left text-left text-left text-left">
-          <div className="max-w-4xl w-full text-left text-left text-left text-left text-left text-left text-left text-left">
-            <button onClick={() => setView('menu')} className="text-slate-400 font-black text-[10px] uppercase mb-10 flex items-center gap-2 hover:text-white transition-colors text-left text-left text-left text-left text-left text-left text-left text-left"><ChevronLeft className="w-4 h-4 text-left text-left text-left text-left text-left text-left text-left text-left" /> Назад</button>
-            <h2 className="text-white text-4xl font-black mb-12 uppercase tracking-tight text-left text-left text-left text-left text-left text-left text-left text-left text-left">Доступные тесты</h2>
-            <div className="grid gap-4 text-left text-left text-left text-left text-left text-left text-left text-left text-left">
-              {materials.filter(m => m.isVisible).map(m => (
-                <button key={m.id} onClick={() => { setActiveMaterial(m); setStudentAnswers([]); setCurrentQuestionIndex(0); setView('quiz'); }} className="bg-slate-800/50 hover:bg-slate-800 p-8 rounded-[2rem] border-2 border-slate-700 flex items-center justify-between group transition-all text-left text-left text-left text-left text-left text-left text-left shadow-lg shadow-black/20">
-                  <div className="flex items-center gap-6 text-left text-left text-left text-left text-left text-left text-left text-left">
-                    <div className="bg-emerald-500 p-4 rounded-2xl shadow-lg text-center text-center text-center text-center text-center text-center text-center text-center"><ClipboardList className="text-white w-6 h-6 text-center text-center text-center text-center text-center text-center text-center text-center" /></div>
-                    <div className="text-left text-left text-left text-left text-left text-left text-left text-left text-left text-left">
-                      <h4 className="text-white font-black text-xl uppercase tracking-tight leading-none text-left text-left text-left text-left text-left text-left text-left text-left text-left">{m.title}</h4>
-                      <span className="text-slate-400 text-[10px] font-bold uppercase tracking-widest mt-2 block text-left text-left text-left text-left text-left text-left text-left text-left text-left">{m.questions?.length} вопросов</span>
-                    </div>
-                  </div>
-                  <ChevronRight className="text-slate-600 group-hover:text-emerald-400 text-left text-left text-left text-left text-left text-left text-left text-left" />
-                </button>
-              ))}
-            </div>
+        <div className="flex-1 flex items-center justify-center p-4">
+          <div className="bg-white w-full max-w-4xl p-16 rounded-[4rem] shadow-2xl relative text-center flex flex-col items-center">
+            <button onClick={() => setView('admin')} className="absolute top-10 left-10 text-slate-400"><ArrowLeft /></button>
+            <h2 className="text-3xl font-black uppercase mb-10 text-slate-900">Конструктор ИИ</h2>
+            <input value={inputTitle} onChange={e => setInputTitle(e.target.value)} placeholder="Название темы" className="w-full p-6 bg-slate-50 border-2 rounded-2xl mb-6 font-bold text-center text-xl uppercase" />
+            <textarea value={inputText} onChange={e => setInputText(e.target.value)} placeholder="Вставьте текст лекции (до 30 страниц)..." className="w-full h-80 p-8 bg-slate-50 border-2 rounded-3xl mb-8 outline-none resize-none font-bold text-slate-700" />
+            <button disabled={isLoading || !inputText} onClick={() => handleGenerateTest()} className="w-full bg-emerald-600 text-white py-8 rounded-[2.5rem] font-black uppercase text-xl shadow-xl active:scale-95 transition-all">
+              {isLoading ? <Loader2 className="animate-spin mx-auto w-10 h-10" /> : "Сформировать тесты"}
+            </button>
           </div>
         </div>
       );
 
-      case 'student-select-tasks': return (
-        <div className="min-h-screen w-full bg-slate-950 p-6 flex flex-col items-center text-left text-left text-left text-left text-left text-left text-left">
-            <div className="max-w-4xl w-full text-left text-left text-left text-left text-left text-left text-left text-left text-left">
-                <button onClick={() => setView('menu')} className="text-slate-400 font-black text-[10px] uppercase mb-10 flex items-center gap-2 hover:text-white transition-colors text-left text-left text-left text-left text-left text-left text-left text-left text-left"><ArrowLeft className="w-4 h-4 text-left text-left text-left text-left text-left text-left text-left text-left text-left" /> Назад</button>
-                <h2 className="text-white text-4xl font-black mb-12 uppercase tracking-tight text-left text-left text-left text-left text-left text-left text-left text-left text-left">Разделы задач</h2>
-                <div className="grid gap-4 text-left text-left text-left text-left text-left text-left text-left text-left text-left">
-                    {taskSections.filter(t => t.isVisible).map(t => (
-                        <button key={t.id} onClick={() => { setActiveTaskSection(t); setCurrentTaskIndex(0); setShowAnswerLocally(false); setView('task-viewer'); }} className="bg-slate-800/50 hover:bg-slate-800 p-8 rounded-[2rem] border-2 border-slate-700 flex items-center justify-between group transition-all text-left text-left text-left text-left text-left text-left text-left text-left shadow-lg shadow-black/20">
-                            <div className="flex items-center gap-6 text-left text-left text-left text-left text-left text-left text-left text-left text-left">
-                              <div className="bg-blue-500 p-4 rounded-2xl shadow-lg text-center text-center text-center text-center text-center text-center text-center text-center text-center"><Stethoscope className="text-white w-6 h-6 text-center text-center text-center text-center text-center text-center text-center text-center text-center text-center" /></div>
-                              <div className="text-left text-left text-left text-left text-left text-left text-left text-left text-left text-left"><h4 className="text-white font-black text-xl uppercase tracking-tight text-left text-left text-left text-left text-left text-left text-left text-left text-left text-left">{t.title}</h4><span className="text-slate-400 text-[10px] font-bold uppercase tracking-widest mt-2 block text-left text-left text-left text-left text-left text-left text-left text-left text-left text-left">{t.tasks?.length} задач</span></div>
-                            </div>
-                            <ChevronRight className="text-slate-600 group-hover:text-blue-400 text-left text-left text-left text-left text-left text-left text-left text-left text-left" />
-                        </button>
-                    ))}
-                </div>
-            </div>
+      case 'setup-tasks': return (
+        <div className="flex-1 flex items-center justify-center p-4">
+          <div className="bg-white w-full max-w-4xl p-16 rounded-[4rem] shadow-2xl relative text-center flex flex-col items-center">
+            <button onClick={() => setView('admin-tasks-list')} className="absolute top-10 left-10 text-slate-400"><ArrowLeft /></button>
+            <h2 className="text-3xl font-black uppercase mb-10 text-slate-900">Новые задачи</h2>
+            <input value={inputTitle} onChange={e => setInputTitle(e.target.value)} placeholder="Название раздела" className="w-full p-6 bg-slate-50 border-2 rounded-2xl mb-6 font-bold text-center text-xl uppercase" />
+            <textarea value={inputText} onChange={e => setInputText(e.target.value)} placeholder="Задача [ТЕКСТ] Ответ [ЭТАЛОН]..." className="w-full h-80 p-8 bg-slate-50 border-2 rounded-3xl mb-8 outline-none resize-none font-bold text-slate-700" />
+            <button disabled={isLoading || !inputText} onClick={handleSaveTasks} className="w-full bg-blue-600 text-white py-8 rounded-[2.5rem] font-black uppercase text-xl shadow-xl active:scale-95 transition-all">Сохранить в облако</button>
+          </div>
         </div>
       );
-
-      case 'quiz':
-        if (!activeMaterial) return null;
-        const q_quiz = activeMaterial.questions[currentQuestionIndex];
-        const isAns_quiz = studentAnswers[currentQuestionIndex] !== undefined;
+      
+      case 'student-select-test': 
         return (
-          <div className="min-h-screen w-full bg-slate-950 flex flex-col items-center text-left">
-            <div className="w-full bg-slate-800/80 p-5 border-b border-slate-700 flex justify-between px-10 text-white sticky top-0 z-50 backdrop-blur-lg text-center">
-              <div className={`flex items-center gap-3 px-6 py-2 rounded-2xl font-black ${timeLeft < 60 ? 'bg-red-500 animate-pulse' : 'bg-slate-700'} text-center`}>
-                <Clock className="w-5 h-5 text-center" /><span className="tabular-nums text-center">{formatTime(timeLeft)}</span>
+          <div className="flex-1 p-6 flex flex-col items-center">
+            <div className="max-w-4xl w-full text-left">
+              <button onClick={() => setView('menu')} className="text-slate-400 font-black text-[10px] uppercase mb-10 flex items-center gap-2 hover:text-white transition-colors"><ChevronLeft className="w-4 h-4" /> Назад</button>
+              <h2 className="text-white text-4xl font-black mb-12 uppercase tracking-tight">Доступные тесты</h2>
+              <div className="grid gap-4">
+                {materials.filter(m => m.isVisible).map(m => (
+                  <button key={m.id} onClick={() => { setActiveMaterial(m); setStudentAnswers([]); setCurrentQuestionIndex(0); setView('quiz'); }} className="bg-slate-800/50 hover:bg-slate-800 p-8 rounded-[2rem] border-2 border-slate-700 flex items-center justify-between group transition-all text-left shadow-lg">
+                    <div className="flex items-center gap-6">
+                      <div className="bg-emerald-500 p-4 rounded-2xl shadow-lg"><ClipboardList className="text-white w-6 h-6" /></div>
+                      <div>
+                        <h4 className="text-white font-black text-xl uppercase leading-none">{m.title}</h4>
+                        <span className="text-slate-400 text-[10px] font-bold uppercase tracking-widest mt-2 block">{m.questions?.length} вопросов</span>
+                      </div>
+                    </div>
+                    <ChevronRight className="text-slate-600 group-hover:text-emerald-400" />
+                  </button>
+                ))}
               </div>
-              <div className="font-black text-emerald-400 text-xl text-center text-center">{currentQuestionIndex + 1} <span className="text-slate-500 font-normal">/ {activeMaterial.questions.length}</span></div>
             </div>
-            <div className="max-w-4xl w-full p-6 flex-1 flex flex-col justify-center text-left text-left text-left">
-              <div className="bg-white rounded-[3.5rem] p-12 md:p-16 shadow-2xl relative mb-10 overflow-hidden text-left text-left text-left">
-                <div className="absolute top-0 right-0 w-32 h-32 bg-slate-50 rounded-bl-[5rem] -mr-10 -mt-10 opacity-50 text-left text-left" />
-                <h2 className="text-2xl md:text-3xl font-bold text-slate-900 mb-12 leading-tight relative z-10 text-left text-left text-left">{q_quiz?.text}</h2>
-                <div className="grid gap-4 relative z-10 text-left text-left text-left">
-                  {q_quiz?.options.map((opt, idx) => {
-                    const isSel = studentAnswers[currentQuestionIndex] === idx;
-                    const isCorr = idx === q_quiz.correctIndex;
-                    let cls = 'border-slate-100 bg-slate-50 text-slate-600 hover:border-emerald-400 hover:bg-emerald-50 transition-all text-left text-left';
-                    if (isAns_quiz) {
-                      if (isSel) cls = isCorr ? 'border-emerald-500 bg-emerald-50 text-emerald-700 font-black scale-[1.02] text-left text-left' : 'border-red-500 bg-red-50 text-red-700 font-black text-left text-left';
-                      else cls = isCorr ? 'border-emerald-200 bg-emerald-50/50 text-emerald-700 text-left text-left' : 'opacity-40 grayscale text-left text-left';
-                    }
-                    return (
-                      <button key={idx} disabled={isAns_quiz} onClick={() => { const a = [...studentAnswers]; a[currentQuestionIndex] = idx; setStudentAnswers(a); }} className={`w-full text-left p-6 md:p-8 rounded-2xl border-2 font-bold text-lg shadow-sm ${cls}`}>
-                        {opt}
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-              <div className="flex justify-between items-center px-4 text-left text-left">
-                <button disabled={currentQuestionIndex === 0} onClick={() => setCurrentQuestionIndex(p => p - 1)} className="text-slate-400 font-black uppercase text-xs flex items-center gap-2 hover:text-white transition-all text-left text-left"><ArrowLeft className="w-4 h-4 text-left text-left" /> Назад</button>
-                {currentQuestionIndex === (activeMaterial.questions.length - 1) 
-                  ? <button onClick={finishQuiz} disabled={!isAns_quiz} className="bg-emerald-600 text-white px-12 py-5 rounded-2xl font-black shadow-xl active:scale-95 transition-all uppercase tracking-widest text-sm text-center text-center">Завершить</button>
-                  : <button onClick={() => setCurrentQuestionIndex(p => p + 1)} disabled={!isAns_quiz} className="bg-blue-600 text-white px-12 py-5 rounded-2xl font-black shadow-xl active:scale-95 transition-all uppercase tracking-widest text-sm flex items-center gap-3 text-center text-center">Далее <ArrowRight className="w-5 h-5 text-center text-center" /></button>
-                }
+          </div>
+        );
+
+      case 'student-select-tasks': 
+        return (
+          <div className="flex-1 p-6 flex flex-col items-center">
+            <div className="max-w-4xl w-full text-left">
+              <button onClick={() => setView('menu')} className="text-slate-400 font-black text-[10px] uppercase mb-10 flex items-center gap-2 hover:text-white transition-colors"><ArrowLeft className="w-4 h-4" /> Назад</button>
+              <h2 className="text-white text-4xl font-black mb-12 uppercase tracking-tight">Разделы задач</h2>
+              <div className="grid gap-4">
+                {taskSections.filter(t => t.isVisible).map(t => (
+                  <button key={t.id} onClick={() => { setActiveTaskSection(t); setCurrentTaskIndex(0); setShowAnswerLocally(false); setView('task-viewer'); }} className="bg-slate-800/50 hover:bg-slate-800 p-8 rounded-[2rem] border-2 border-slate-700 flex items-center justify-between group transition-all text-left shadow-lg">
+                    <div className="flex items-center gap-6">
+                      <div className="bg-blue-500 p-4 rounded-2xl shadow-lg"><Stethoscope className="text-white w-6 h-6" /></div>
+                      <div>
+                        <h4 className="text-white font-black text-xl uppercase leading-none">{t.title}</h4>
+                        <span className="text-slate-400 text-[10px] font-bold uppercase tracking-widest mt-2 block">{t.tasks?.length} ситуаций</span>
+                      </div>
+                    </div>
+                    <ChevronRight className="text-slate-600 group-hover:text-blue-400" />
+                  </button>
+                ))}
               </div>
             </div>
           </div>
@@ -508,60 +410,55 @@ const App = () => {
         if (!activeTaskSection) return null;
         const task = activeTaskSection.tasks[currentTaskIndex];
         return (
-            <div className="min-h-screen w-full bg-slate-950 flex flex-col items-center text-left">
-                <div className="w-full bg-slate-800/80 p-5 border-b border-slate-700 flex justify-between px-10 text-white uppercase font-black text-[10px] sticky top-0 z-50 backdrop-blur-lg text-center">
-                    <button onClick={() => setView('student-select-tasks')} className="bg-slate-700 p-2 rounded-xl text-center text-center text-center"><ArrowLeft className="w-5 h-5 text-white text-center text-center" /></button>
-                    <span className="truncate max-w-[250px] tracking-widest opacity-60 flex items-center text-center text-center">{activeTaskSection.title}</span>
-                    <span className="text-blue-400 text-lg flex items-center text-center text-center">{currentTaskIndex + 1} <span className="text-slate-500 mx-1 text-center text-center">/</span> {activeTaskSection.tasks.length}</span>
+            <div className="flex-1 flex flex-col items-center">
+                <div className="w-full bg-slate-800/80 p-5 border-b flex justify-between px-10 text-white sticky top-0 z-50 backdrop-blur-lg">
+                    <button onClick={() => setView('student-select-tasks')}><ArrowLeft className="w-6 h-6 text-slate-400" /></button>
+                    <span className="truncate max-w-[200px] tracking-widest opacity-60 flex items-center">{activeTaskSection.title}</span>
+                    <span className="text-blue-400 text-lg flex items-center">{currentTaskIndex + 1} / {activeTaskSection.tasks.length}</span>
                 </div>
-                <div className="max-w-5xl w-full p-6 flex-1 flex flex-col justify-center text-left text-left">
-                    <div className="bg-white rounded-[4rem] p-12 md:p-16 shadow-2xl min-h-[450px] relative text-left text-left">
-                        <div className="flex items-center gap-3 mb-10 text-left text-left">
-                          <span className="bg-blue-600 text-white px-6 py-2 rounded-2xl font-black text-xs uppercase shadow-lg text-left text-left">Задача {task?.id}</span>
-                          <span className="text-slate-300 font-black text-[10px] uppercase tracking-widest text-left text-left">Клинический случай</span>
-                        </div>
-                        <p className="text-xl md:text-2xl font-bold text-slate-800 leading-relaxed whitespace-pre-wrap mb-12 text-left text-left">{task?.text}</p>
+                <div className="max-w-5xl w-full p-6 flex-1 flex flex-col justify-center">
+                    <div className="bg-white rounded-[4rem] p-12 md:p-16 shadow-2xl min-h-[450px] relative text-left">
+                        <span className="bg-blue-600 text-white px-6 py-2 rounded-2xl font-black text-xs uppercase shadow-lg mb-10 inline-block">Задача {task?.id}</span>
+                        <p className="text-xl md:text-2xl font-bold text-slate-800 leading-relaxed whitespace-pre-wrap mb-12">{task?.text}</p>
                         {activeTaskSection.isAnswersEnabled && (
-                            <div className="mt-12 pt-12 border-t border-slate-50 text-left text-left">
+                            <div className="mt-12 pt-12 border-t">
                                 {showAnswerLocally 
-                                    ? <div className="bg-emerald-50 border-2 border-emerald-100 p-10 rounded-[2.5rem] animate-in slide-in-from-top-4 shadow-inner text-left text-left">
-                                        <p className="text-emerald-600 font-black uppercase text-[10px] mb-4 tracking-widest flex items-center gap-2 text-left text-left"><CheckCircle2 className="w-4 h-4 text-left text-left"/> Эталон ответа:</p>
-                                        <p className="text-emerald-900 font-bold text-xl leading-relaxed italic text-left text-left">{task?.answer}</p>
+                                    ? <div className="bg-emerald-50 border-2 border-emerald-100 p-10 rounded-[2.5rem] animate-in slide-in-from-top-4">
+                                        <p className="text-emerald-600 font-black uppercase text-[10px] mb-4 tracking-widest flex items-center gap-2"><CheckCircle2 className="w-4 h-4"/> Эталон ответа:</p>
+                                        <p className="text-emerald-900 font-bold text-xl italic">{task?.answer}</p>
                                       </div>
-                                    : <button onClick={() => setShowAnswerLocally(true)} className="w-full py-8 border-4 border-dashed border-emerald-100 text-emerald-600 rounded-[2.5rem] font-black uppercase text-sm hover:bg-emerald-50 hover:border-emerald-200 transition-all flex items-center justify-center gap-4 group text-center text-center">
-                                        <Eye className="w-6 h-6 group-hover:scale-110 transition-transform text-center text-center" /> Показать правильный ответ
-                                      </button>
+                                    : <button onClick={() => setShowAnswerLocally(true)} className="w-full py-8 border-4 border-dashed border-emerald-100 text-emerald-600 rounded-[2.5rem] font-black uppercase text-sm hover:bg-emerald-50 transition-all flex items-center justify-center gap-4">Показать правильный ответ</button>
                                 }
                             </div>
                         )}
                     </div>
-                    <div className="flex justify-between items-center px-4 mt-10 text-left text-left text-left">
-                        <button disabled={currentTaskIndex === 0} onClick={() => { setCurrentTaskIndex(p => p - 1); setShowAnswerLocally(false); }} className="bg-slate-800 p-6 rounded-3xl text-white font-black uppercase text-xs flex items-center gap-3 hover:bg-slate-700 transition-all shadow-xl text-left text-left"><ArrowLeft className="w-5 h-5 text-left text-left" /> Назад</button>
-                        <button disabled={currentTaskIndex === activeTaskSection.tasks.length - 1} onClick={() => { setCurrentTaskIndex(p => p + 1); setShowAnswerLocally(false); }} className="bg-blue-600 p-6 rounded-3xl text-white font-black uppercase text-xs flex items-center gap-3 shadow-2xl shadow-blue-500/20 active:scale-95 transition-all text-left text-left">Вперед <ArrowRight className="w-5 h-5 text-left text-left" /></button>
+                    <div className="flex justify-between items-center px-4 mt-10 w-full max-w-5xl">
+                        <button disabled={currentTaskIndex === 0} onClick={() => { setCurrentTaskIndex(p => p - 1); setShowAnswerLocally(false); }} className="bg-slate-800 p-6 rounded-3xl text-white font-black uppercase text-xs flex items-center gap-3 hover:bg-slate-700 shadow-xl"><ArrowLeft className="w-5 h-5" /> Назад</button>
+                        <button disabled={currentTaskIndex === activeTaskSection.tasks.length - 1} onClick={() => { setCurrentTaskIndex(p => p + 1); setShowAnswerLocally(false); }} className="bg-blue-600 p-6 rounded-3xl text-white font-black uppercase text-xs flex items-center gap-3 shadow-2xl active:scale-95 transition-all">Вперед <ArrowRight className="w-5 h-5" /></button>
                     </div>
                 </div>
             </div>
         );
 
       case 'result': return (
-        <div className="min-h-screen w-full bg-slate-900 flex items-center justify-center p-4 text-center">
-          <div className="max-w-2xl w-full bg-white rounded-[5rem] p-20 shadow-2xl relative text-center animate-in zoom-in duration-500 text-center">
-            <div className="bg-emerald-100 w-32 h-32 rounded-full flex items-center justify-center mx-auto mb-10 shadow-xl text-center">
-              <Trophy className="w-16 h-16 text-emerald-600 text-center" />
+        <div className="flex-1 flex items-center justify-center p-4">
+          <div className="max-w-2xl w-full bg-white rounded-[5rem] p-20 shadow-2xl relative text-center animate-in zoom-in duration-500 flex flex-col items-center">
+            <div className="bg-emerald-100 w-32 h-32 rounded-full flex items-center justify-center mx-auto mb-10 shadow-xl">
+              <Trophy className="w-16 h-16 text-emerald-600" />
             </div>
-            <h1 className="text-4xl font-black text-slate-900 mb-4 uppercase tracking-tighter leading-none text-center">Тест завершен</h1>
-            <p className="text-slate-400 font-bold uppercase text-[10px] tracking-widest mb-12 text-center text-center">Ваш результат сохранен в базе данных</p>
-            <div className="grid grid-cols-2 gap-8 mb-16 text-center text-center">
-              <div className="bg-emerald-50 p-10 rounded-[3rem] border border-emerald-100 shadow-sm text-center text-center text-center">
-                <p className="text-[10px] font-black text-emerald-400 uppercase mb-4 tracking-widest text-center text-center">Баллы</p>
-                <p className="text-6xl font-black text-emerald-600 text-center text-center text-center">{(results[0]?.score || 0)} <span className="text-2xl text-emerald-300 font-normal text-center text-center">/ {(results[0]?.total || 0)}</span></p>
+            <h1 className="text-4xl font-black text-slate-900 mb-4 uppercase tracking-tighter leading-none">Тест завершен</h1>
+            <p className="text-slate-400 font-bold uppercase text-[10px] tracking-widest mb-12">Ваш результат сохранен в базе данных</p>
+            <div className="grid grid-cols-2 gap-8 mb-16 w-full">
+              <div className="bg-emerald-50 p-10 rounded-[3rem] border border-emerald-100 shadow-sm">
+                <p className="text-[10px] font-black text-emerald-400 uppercase mb-4 tracking-widest text-center">Баллы</p>
+                <p className="text-6xl font-black text-emerald-600 text-center">{(results[0]?.score || 0)} / {(results[0]?.total || 0)}</p>
               </div>
-              <div className="bg-slate-50 p-10 rounded-[3rem] border border-slate-100 shadow-sm text-center text-center text-center">
-                <p className="text-[10px] font-black text-slate-400 uppercase mb-4 tracking-widest text-center text-center">Процент</p>
-                <p className="text-6xl font-black text-slate-900 text-center text-center text-center">{(results[0]?.percentage || 0)}<span className="text-2xl font-normal opacity-30 text-center text-center">%</span></p>
+              <div className="bg-slate-50 p-10 rounded-[3rem] border border-slate-100 shadow-sm">
+                <p className="text-[10px] font-black text-slate-400 uppercase mb-4 tracking-widest text-center">Процент</p>
+                <p className="text-6xl font-black text-slate-900 text-center">{(results[0]?.percentage || 0)}%</p>
               </div>
             </div>
-            <button onClick={() => setView('menu')} className="w-full bg-slate-900 text-white font-black py-8 rounded-[2.5rem] shadow-2xl hover:bg-slate-800 transition-all uppercase tracking-[0.2em] active:scale-95 text-lg text-center text-center">Вернуться в меню</button>
+            <button onClick={() => setView('menu')} className="w-full bg-slate-900 text-white font-black py-8 rounded-[2.5rem] shadow-2xl hover:bg-slate-800 transition-all uppercase active:scale-95 text-lg">Вернуться в меню</button>
           </div>
         </div>
       );
@@ -571,10 +468,10 @@ const App = () => {
   };
 
   return (
-    <div className="font-sans antialiased text-left w-full min-h-screen flex flex-col selection:bg-emerald-100 selection:text-emerald-900 text-left text-left bg-slate-950">
+    <div className="font-sans antialiased text-left w-full min-h-screen flex flex-col bg-slate-950 items-center justify-center">
       {renderCurrentView()}
       {toastMessage && (
-        <div className="fixed bottom-10 left-1/2 -translate-x-1/2 bg-slate-900 text-white px-12 py-6 rounded-[2.5rem] font-black shadow-2xl z-[100] border-2 border-slate-700 uppercase text-xs animate-in fade-in slide-in-from-bottom-4 text-center text-center text-center">
+        <div className="fixed bottom-10 left-1/2 -translate-x-1/2 bg-slate-900 text-white px-12 py-6 rounded-[2.5rem] font-black shadow-2xl z-[100] border-2 border-slate-700 uppercase text-xs animate-in fade-in slide-in-from-bottom-4 text-center">
           {toastMessage}
         </div>
       )}
