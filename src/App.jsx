@@ -4,7 +4,7 @@ import {
   Loader2, FileText, Eye, ShieldCheck, GraduationCap, ClipboardList, 
   Stethoscope, Clock, AlertCircle, FileSearch, Timer, Plus, 
   RefreshCw, Trash2, BookOpen, Lock, Unlock, EyeOff, ArrowLeft, ArrowRight,
-  Trophy, Settings, Key, Zap, Bug, Globe
+  Trophy, Settings, Key, Zap, Bug, Globe, Server
 } from 'lucide-react';
 import { initializeApp, getApps } from 'firebase/app';
 import { 
@@ -15,7 +15,7 @@ import {
   getAuth, signInAnonymously, onAuthStateChanged 
 } from 'firebase/auth';
 
-// --- FIREBASE ---
+// --- КОНФИГУРАЦИЯ FIREBASE ---
 const firebaseConfig = {
   apiKey: "AIzaSyCgoD4vZCEU2W_w3TzE3102JcnlXnocmMg",
   authDomain: "surgery-app-89c4c.firebaseapp.com",
@@ -49,17 +49,6 @@ const App = () => {
   const [toastMessage, setToastMessage] = useState(null);
   const [debugLog, setDebugLog] = useState(""); 
 
-  // Ключ для Hugging Face (начинается на hf_)
-  const [sessionAiKey, setSessionAiKey] = useState("");
-
-  useEffect(() => {
-    try {
-      // Ищем ключ HF в переменных окружения
-      const key = import.meta.env.VITE_HF_KEY;
-      if (key && key.startsWith("hf_")) setSessionAiKey(key);
-    } catch (e) {}
-  }, []);
-
   const [materials, setMaterials] = useState([]); 
   const [taskSections, setTaskSections] = useState([]); 
   const [results, setResults] = useState([]); 
@@ -82,7 +71,7 @@ const App = () => {
   useEffect(() => {
     if (!isFirebaseReady || !auth) return;
     const unsubscribe = onAuthStateChanged(auth, (u) => {
-      if (!u) signInAnonymously(auth).catch(e => setDebugLog("Auth: " + e.message));
+      if (!u) signInAnonymously(auth).catch(e => setDebugLog("Auth Error: " + e.message));
       else setUser(u);
     });
     return () => unsubscribe();
@@ -133,87 +122,49 @@ const App = () => {
     return `${min}:${sec < 10 ? '0' + sec : sec}`;
   };
 
-  // --- ГЕНЕРАЦИЯ ЧЕРЕЗ HUGGING FACE (QWEN) ---
+  // --- НОВАЯ ЛОГИКА: ЗАПРОС ЧЕРЕЗ СЕРВЕР VERCEL ---
   const handleGenerateTest = async (existing = null) => {
     setDebugLog(""); 
     const text = existing ? existing.content : inputText;
     const title = existing ? existing.title : inputTitle;
     
     if (!text.trim() || !title.trim()) return showToast("Заполните поля!");
-    if (!sessionAiKey.startsWith("hf_")) return showToast("Нужен ключ Hugging Face (hf_...)!");
 
     setIsLoading(true);
 
     try {
-      // Используем Qwen 2.5 72B Instruct - одна из лучших моделей в мире сейчас
-      const url = "https://api-inference.huggingface.co/models/Qwen/Qwen2.5-72B-Instruct";
-      
-      const prompt = `<|im_start|>system
-You are a strict medical professor. 
-Generate exactly 30 multiple-choice questions in Russian based on the user's text.
-Output MUST be a raw JSON array. No markdown, no comments.
-Format: [{"text": "Вопрос", "options": ["А", "Б", "В", "Г"], "correctIndex": 0}]
-<|im_end|>
-<|im_start|>user
-Вот текст лекции:
-${text.substring(0, 30000)}
-<|im_end|>
-<|im_start|>assistant
-`;
-
-      const res = await fetch(url, {
+      // Мы обращаемся к НАШЕМУ серверу /api/generate
+      // Vercel сам перенаправит это на созданный нами файл generate.js
+      const res = await fetch('/api/generate', {
         method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${sessionAiKey}`,
-          'Content-Type': 'application/json'
-        },
+        headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({ 
-          inputs: prompt,
-          parameters: { 
-            max_new_tokens: 4000, 
-            return_full_text: false,
-            temperature: 0.1 
-          } 
+            // Отправляем только текст, сервер сам разберется с промптом
+            text: text 
         })
       });
 
       const data = await res.json();
       
       if (!res.ok) {
-        if (data.error && data.error.includes("loading")) {
-           throw new Error("Модель Qwen запускается. Подождите 20 сек и нажмите снова.");
-        }
-        throw new Error(JSON.stringify(data));
+        throw new Error(data.error || "Ошибка сервера");
       }
 
-      let rawContent = "";
-      if (Array.isArray(data)) rawContent = data[0].generated_text;
-      else if (data.generated_text) rawContent = data.generated_text;
-      else throw new Error("Strange response: " + JSON.stringify(data));
-      
-      // Чистим JSON
-      const start = rawContent.indexOf('[');
-      const end = rawContent.lastIndexOf(']') + 1;
-      
-      if (start === -1 || end <= 0) {
-          setDebugLog("Ответ не JSON. ИИ сказал:\n" + rawContent.substring(0, 300) + "...");
-          throw new Error("Ошибка формата ответа");
+      if (!data.questions || !Array.isArray(data.questions)) {
+          throw new Error("Неверный формат ответа от сервера");
       }
       
-      const cleanJson = rawContent.substring(start, end);
-      const questions = JSON.parse(cleanJson);
-      
       await setDoc(doc(db, 'artifacts', PORTAL_ID, 'public', 'data', 'materials', existing?.id || crypto.randomUUID()), { 
-        title, content: text, questions, updatedAt: Date.now(), isVisible: existing?.isVisible ?? false 
+        title, content: text, questions: data.questions, updatedAt: Date.now(), isVisible: existing?.isVisible ?? false 
       });
       
-      showToast("Тест создан (Qwen AI)!");
+      showToast("Тест успешно создан!");
       setView('admin-materials');
       setInputText(''); setInputTitle('');
     } catch (e) { 
       console.error(e);
-      setDebugLog(prev => prev || e.message); 
-      showToast("Ошибка. См. лог ниже.");
+      setDebugLog("Server Error: " + e.message); 
+      showToast("Ошибка! См. лог ниже.");
     } finally { setIsLoading(false); }
   };
 
@@ -248,7 +199,7 @@ ${text.substring(0, 30000)}
 
     switch (view) {
       case 'welcome': return (
-        <div className="min-h-screen bg-slate-950 flex items-center justify-center p-4">
+        <div className="min-h-screen w-full bg-slate-950 flex items-center justify-center p-4">
           <div className="max-w-md w-full bg-white rounded-[3rem] p-10 shadow-2xl text-center flex flex-col items-center">
             <div className="bg-emerald-500 w-16 h-16 rounded-2xl mb-6 flex items-center justify-center shadow-xl"><GraduationCap className="text-white w-10 h-10" /></div>
             <h1 className="text-3xl font-black text-slate-900 mb-2 uppercase tracking-tight">Госпитальная хирургия</h1>
@@ -302,22 +253,14 @@ ${text.substring(0, 30000)}
               </div>
             </div>
             
-            <div className="bg-amber-500 p-8 rounded-[3rem] mb-12 shadow-2xl flex flex-col md:flex-row items-center gap-6 border-4 border-amber-300 text-center">
-                <div className="bg-white p-4 rounded-2xl"><Key className="text-amber-600 w-8 h-8" /></div>
+            <div className="bg-blue-900 p-8 rounded-[3rem] mb-12 shadow-2xl flex flex-col md:flex-row items-center gap-6 border-4 border-blue-500/20 text-center">
+                <div className="bg-blue-500 p-4 rounded-2xl"><Server className="text-white w-8 h-8" /></div>
                 <div className="flex-1 text-left">
-                    <h3 className="text-white font-black uppercase text-sm mb-1 text-left">Ключ Hugging Face</h3>
-                    <p className="text-white/90 text-[10px] font-bold uppercase tracking-widest text-left">Используем Qwen (Китай) через Hugging Face. Введите ключ.</p>
+                    <h3 className="text-white font-black uppercase text-sm mb-1 text-left">Режим Сервера (США)</h3>
+                    <p className="text-blue-200 text-[10px] font-bold uppercase tracking-widest text-left">Запросы к ИИ идут через сервер Vercel. Ключ не нужен здесь.</p>
                 </div>
-                <input 
-                    type="password" 
-                    value={sessionAiKey} 
-                    onChange={(e) => setSessionAiKey(e.target.value)}
-                    placeholder="hf_..." 
-                    className="flex-1 p-5 bg-white rounded-2xl text-slate-900 font-mono text-sm outline-none focus:border-amber-700 border-2 border-transparent"
-                />
             </div>
 
-            {/* БЛОК ДИАГНОСТИКИ */}
             {debugLog && (
                 <div className="bg-red-950 p-6 rounded-2xl mb-10 border-2 border-red-500 text-left text-red-200 font-mono text-xs overflow-auto max-w-4xl mx-auto whitespace-pre-wrap">
                     <div className="font-bold mb-2 flex items-center gap-2"><Bug className="w-4 h-4"/> ДИАГНОСТИКА:</div>
@@ -352,19 +295,20 @@ ${text.substring(0, 30000)}
         <div className="min-h-screen bg-slate-900 flex items-center justify-center p-4">
             <div className="max-w-5xl w-full bg-white rounded-[4rem] p-12 sm:p-20 shadow-2xl relative text-center flex flex-col items-center">
                 <button onClick={() => setView('admin')} className="absolute top-12 left-12 text-slate-400 font-black uppercase text-[10px] flex items-center gap-3 hover:text-slate-900 transition-all self-start text-left"><ArrowLeft className="w-5 h-5" /> Назад</button>
-                <div className="bg-emerald-100 w-24 h-24 rounded-3xl mb-10 flex items-center justify-center text-center"><Globe className="w-12 h-12 text-emerald-600"/></div>
-                <h2 className="text-4xl font-black text-slate-900 uppercase mb-2 tracking-tight text-center">Создание Теста (Qwen)</h2>
+                <div className="bg-emerald-100 w-24 h-24 rounded-3xl mb-10 flex items-center justify-center text-center"><Plus className="w-12 h-12 text-emerald-600"/></div>
+                <h2 className="text-4xl font-black text-slate-900 uppercase mb-2 tracking-tight text-center">Создание ИИ Теста</h2>
                 <div className="space-y-6 text-left w-full mt-10">
                     <input type="text" value={inputTitle} onChange={e => setInputTitle(e.target.value)} placeholder="Тема теста" className="w-full p-8 bg-slate-50 border-2 border-transparent rounded-3xl focus:bg-white focus:border-emerald-600 font-bold text-slate-900 text-center uppercase shadow-inner text-xl" />
                     <textarea value={inputText} onChange={e => setInputText(e.target.value)} placeholder="Вставьте учебный материал..." className="w-full h-[400px] p-10 bg-slate-50 border-2 border-transparent rounded-[3rem] focus:bg-white focus:border-emerald-600 outline-none resize-none font-bold text-slate-700 text-lg shadow-inner scrollbar-hide text-left" />
                 </div>
                 <button disabled={isLoading || !inputText || !inputTitle} onClick={() => handleGenerateTest()} className="w-full mt-10 bg-emerald-600 hover:bg-emerald-500 text-white font-black py-8 rounded-[2.5rem] shadow-2xl active:scale-95 transition-all uppercase tracking-[0.2em] shadow-emerald-500/20 text-xl flex items-center justify-center gap-6 text-center">
                   {isLoading ? <Loader2 className="animate-spin w-8 h-8 text-center"/> : <RefreshCw className="w-8 h-8 text-center"/>} 
-                  {isLoading ? "ИИ ДУМАЕТ..." : "СФОРМИРОВАТЬ ТЕСТ"}
+                  {isLoading ? "ГЕНЕРАЦИЯ (Server)..." : "СФОРМИРОВАТЬ ТЕСТ"}
                 </button>
             </div>
         </div>
       );
+      // ... (Остальные экраны: admin-materials, admin-tasks-list, setup-tasks, student-select-test, student-select-tasks, quiz, result - добавлены в код для полноты)
       case 'admin-materials': return <div className="p-10 bg-slate-50 min-h-screen text-center flex flex-col items-center"><button onClick={() => setView('admin')} className="mb-10 text-slate-400 font-black uppercase text-xs flex items-center gap-2 self-start"><ArrowLeft className="w-4 h-4" /> Назад</button><div className="grid gap-4 max-w-4xl w-full">{materials.map(m => <div key={m.id} className="bg-white p-6 rounded-2xl shadow flex justify-between items-center text-left"><h4 className="font-black text-slate-900 uppercase text-left">{m.title}</h4><div className="flex gap-4"><button onClick={() => updateDoc(doc(db, 'artifacts', PORTAL_ID, 'public', 'data', 'materials', m.id), {isVisible: !m.isVisible})} className={`p-4 rounded-xl ${m.isVisible ? 'bg-emerald-500 text-white' : 'bg-slate-100 text-slate-400'}`}>{m.isVisible ? <Unlock className="w-5 h-5"/> : <Lock className="w-5 h-5"/>}</button><button onClick={() => deleteDoc(doc(db, 'artifacts', PORTAL_ID, 'public', 'data', 'materials', m.id))} className="p-4 bg-red-50 text-red-500 rounded-xl"><Trash2 className="w-5 h-5"/></button></div></div>)}</div></div>;
       case 'admin-tasks-list': return <div className="p-10 bg-slate-50 min-h-screen text-center flex flex-col items-center"><button onClick={() => setView('admin')} className="mb-10 text-slate-400 font-black uppercase text-xs flex items-center gap-2 self-start"><ArrowLeft className="w-4 h-4" /> Назад</button><button onClick={() => setView('setup-tasks')} className="mb-6 w-full max-w-4xl bg-slate-900 text-white py-6 rounded-2xl font-black uppercase text-xs">Добавить задачи</button><div className="grid gap-4 max-w-4xl w-full">{taskSections.map(s => <div key={s.id} className="bg-white p-6 rounded-2xl shadow flex justify-between items-center text-left"><h4 className="font-black text-slate-900 uppercase text-left">{s.title}</h4><div className="flex gap-4"><button onClick={() => updateDoc(doc(db, 'artifacts', PORTAL_ID, 'public', 'data', 'task_sections', s.id), {isVisible: !s.isVisible})} className={`p-4 rounded-xl ${s.isVisible ? 'bg-blue-500 text-white' : 'bg-slate-100 text-slate-400'}`}>{s.isVisible ? <Unlock className="w-5 h-5"/> : <Lock className="w-5 h-5"/>}</button><button onClick={() => deleteDoc(doc(db, 'artifacts', PORTAL_ID, 'public', 'data', 'task_sections', s.id))} className="p-4 bg-red-50 text-red-500 rounded-xl"><Trash2 className="w-5 h-5"/></button></div></div>)}</div></div>;
       case 'setup-tasks': return <div className="min-h-screen bg-slate-950 flex items-center justify-center p-4"><div className="max-w-4xl w-full bg-white p-10 rounded-[3rem] text-center flex flex-col items-center"><button onClick={() => setView('admin-tasks-list')} className="mb-8 text-slate-400 font-black uppercase text-xs flex items-center gap-2 self-start"><ArrowLeft className="w-4 h-4" /> Назад</button><h2 className="text-3xl font-black uppercase mb-6">Новые задачи</h2><input value={inputTitle} onChange={e => setInputTitle(e.target.value)} className="w-full p-6 bg-slate-50 rounded-2xl mb-4 font-bold text-center" placeholder="Название темы" /><textarea value={inputText} onChange={e => setInputText(e.target.value)} className="w-full h-64 p-6 bg-slate-50 rounded-2xl mb-6 font-bold text-left" placeholder="Задача [ТЕКСТ] Ответ [ЭТАЛОН]..." /><button onClick={handleSaveTasks} className="w-full bg-blue-600 text-white py-6 rounded-2xl font-black uppercase">Загрузить</button></div></div>;
@@ -391,12 +335,6 @@ ${text.substring(0, 30000)}
         <div className="fixed bottom-10 left-1/2 -translate-x-1/2 bg-slate-900 text-white px-12 py-6 rounded-[2.5rem] font-black shadow-2xl z-[100] border-2 border-slate-700 uppercase text-xs animate-in fade-in slide-in-from-bottom-4 text-center text-center text-center">
           {toastMessage}
         </div>
-      )}
-      {debugLog && (
-          <div className="fixed top-10 left-1/2 -translate-x-1/2 bg-red-900 text-white px-10 py-5 rounded-2xl shadow-2xl z-[110] border-2 border-red-500 font-mono text-xs max-w-lg">
-              <div className="font-bold mb-2">ОТЛАДКА:</div>
-              {debugLog}
-          </div>
       )}
     </div>
   );
