@@ -4,7 +4,7 @@ import {
   Loader2, FileText, Eye, ShieldCheck, GraduationCap, ClipboardList, 
   Stethoscope, Clock, AlertCircle, FileSearch, Timer, Plus, 
   RefreshCw, Trash2, BookOpen, Lock, Unlock, EyeOff, ArrowLeft, ArrowRight,
-  Trophy, Settings, Key, Zap, Bug
+  Trophy, Settings, Key, AlertTriangle, Bug
 } from 'lucide-react';
 import { initializeApp, getApps } from 'firebase/app';
 import { 
@@ -15,7 +15,7 @@ import {
   getAuth, signInAnonymously, onAuthStateChanged 
 } from 'firebase/auth';
 
-// --- FIREBASE ---
+// --- КОНФИГУРАЦИЯ FIREBASE ---
 const firebaseConfig = {
   apiKey: "AIzaSyCgoD4vZCEU2W_w3TzE3102JcnlXnocmMg",
   authDomain: "surgery-app-89c4c.firebaseapp.com",
@@ -47,15 +47,16 @@ const App = () => {
   const [studentName, setStudentName] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [toastMessage, setToastMessage] = useState(null);
+  
+  // Лог для диагностики прямо на экране
   const [debugLog, setDebugLog] = useState(""); 
 
-  // Ключ теперь для Groq (начинается на gsk_...)
-  const [sessionAiKey, setSessionAiKey] = useState("");
+  const [sessionGeminiKey, setSessionGeminiKey] = useState("");
 
   useEffect(() => {
     try {
-      if (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_GROQ_KEY) {
-        setSessionAiKey(import.meta.env.VITE_GROQ_KEY);
+      if (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_GEMINI_KEY) {
+        setSessionGeminiKey(import.meta.env.VITE_GEMINI_KEY);
       }
     } catch (e) {}
   }, []);
@@ -133,87 +134,70 @@ const App = () => {
     return `${min}:${sec < 10 ? '0' + sec : sec}`;
   };
 
-  // --- ЛОГИКА ГЕНЕРАЦИИ ЧЕРЕЗ GROQ (LLAMA 3) ---
+  // --- ЛОГИКА ГЕНЕРАЦИИ (ТОЧНАЯ КОПИЯ РАБОТАЮЩЕЙ УТИЛИТЫ) ---
   const handleGenerateTest = async (existing = null) => {
     setDebugLog(""); 
     const text = existing ? existing.content : inputText;
     const title = existing ? existing.title : inputTitle;
     
     if (!text.trim() || !title.trim()) return showToast("Заполните поля!");
-    if (!sessionAiKey) return showToast("ВВЕДИТЕ КЛЮЧ GROQ В ЗЕЛЕНОЕ ПОЛЕ!");
+    if (!sessionGeminiKey) return showToast("Сначала введите API Ключ!");
 
     setIsLoading(true);
-    
+
     try {
-      const url = "https://api.groq.com/openai/v1/chat/completions";
+      // 1. Используем тот же адрес, что и в утилите (v1beta)
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${sessionGeminiKey}`;
       
       const prompt = `
-        Ты - профессор медицины. Твоя задача: на основе текста ниже создать ровно 30 тестовых вопросов на русском языке.
-        
-        ФОРМАТ ОТВЕТА:
-        Ты должен вернуть ТОЛЬКО валидный JSON массив. Никакого текста до или после.
-        Структура: [{"text": "Вопрос?", "options": ["Вариант А", "Вариант Б", "Вариант В", "Вариант Г"], "correctIndex": 0}]
-        
-        ТЕКСТ ЛЕКЦИИ:
-        ${text.substring(0, 30000)}
+        You are a medical professor. 
+        Create exactly 30 multiple-choice questions in Russian based on the text.
+        OUTPUT ONLY A RAW JSON ARRAY. NO MARKDOWN. NO "json" word.
+        Format: [{"text": "Question?", "options": ["A", "B", "C", "D"], "correctIndex": 0}]
+
+        TEXT:
+        ${text.substring(0, 45000)}
       `;
 
+      // 2. Убрали generationConfig. Это была главная причина ошибки в React приложении.
       const res = await fetch(url, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${sessionAiKey}`
-        },
-        body: JSON.stringify({
-          model: "llama3-8b-8192", // Используем быструю и умную модель от Meta
-          messages: [{ role: "user", content: prompt }],
-          temperature: 0.1,
-          response_format: { type: "json_object" } // Groq поддерживает гарантированный JSON!
-        })
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
       });
 
       const data = await res.json();
       
       if (!res.ok) {
-        const msg = data.error?.message || "Ошибка Groq API";
-        setDebugLog(`API ERROR: ${msg}`);
-        throw new Error(msg);
+        const errorDetails = JSON.stringify(data.error, null, 2);
+        setDebugLog(`ОШИБКА API (${res.status}):\n${errorDetails}`);
+        throw new Error(data.error?.message || "Ошибка API");
       }
 
-      let rawContent = data.choices[0].message.content;
+      let rawContent = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
       
-      // Иногда Llama возвращает объект { "questions": [...] }, а иногда просто массив. 
-      // Проверим и нормализуем.
-      let questions;
-      try {
-        const parsed = JSON.parse(rawContent);
-        if (Array.isArray(parsed)) {
-            questions = parsed;
-        } else if (parsed.questions && Array.isArray(parsed.questions)) {
-            questions = parsed.questions;
-        } else {
-            // Если структура сложнее, попробуем найти массив в тексте (резервный вариант)
-            throw new Error("Complex JSON structure");
-        }
-      } catch (parseErr) {
-          // Резервный парсинг (если вернулся не чистый JSON)
-          const start = rawContent.indexOf('[');
-          const end = rawContent.lastIndexOf(']') + 1;
-          if (start === -1) throw new Error("JSON не найден в ответе.");
-          questions = JSON.parse(rawContent.substring(start, end));
+      // 3. Парсинг ответа
+      const start = rawContent.indexOf('[');
+      const end = rawContent.lastIndexOf(']') + 1;
+      
+      if (start === -1 || end <= 0) {
+          setDebugLog("Ответ не содержит JSON. Сырой ответ:\n" + rawContent.substring(0, 200) + "...");
+          throw new Error("Неверный формат ответа");
       }
+      
+      const cleanJson = rawContent.substring(start, end);
+      const questions = JSON.parse(cleanJson);
       
       await setDoc(doc(db, 'artifacts', PORTAL_ID, 'public', 'data', 'materials', existing?.id || crypto.randomUUID()), { 
         title, content: text, questions, updatedAt: Date.now(), isVisible: existing?.isVisible ?? false 
       });
       
-      showToast("Тест успешно создан (Llama 3)!");
+      showToast("Тест успешно создан!");
       setView('admin-materials');
       setInputText(''); setInputTitle('');
-
     } catch (e) { 
       console.error(e);
-      setDebugLog(prev => prev + "\n" + e.message); 
+      if (!debugLog) setDebugLog(e.message); 
       showToast("ОШИБКА! См. лог ниже.");
     } finally { setIsLoading(false); }
   };
@@ -249,7 +233,7 @@ const App = () => {
 
     switch (view) {
       case 'welcome': return (
-        <div className="min-h-screen bg-slate-950 flex items-center justify-center p-4">
+        <div className="min-h-screen w-full bg-slate-950 flex items-center justify-center p-4">
           <div className="max-w-md w-full bg-white rounded-[3rem] p-10 shadow-2xl text-center flex flex-col items-center">
             <div className="bg-emerald-500 w-16 h-16 rounded-2xl mb-6 flex items-center justify-center shadow-xl"><GraduationCap className="text-white w-10 h-10" /></div>
             <h1 className="text-3xl font-black text-slate-900 mb-2 uppercase tracking-tight">Госпитальная хирургия</h1>
@@ -285,7 +269,7 @@ const App = () => {
           <div className="max-w-md w-full bg-white rounded-[3rem] p-12 shadow-2xl flex flex-col items-center text-center">
             <ShieldCheck className="w-16 h-16 text-slate-900 mx-auto mb-10 text-center" />
             <input type="password" value={adminPassword} onChange={(e) => setAdminPassword(e.target.value)} placeholder="••••" className="w-full p-6 bg-slate-50 border-2 border-slate-100 rounded-2xl outline-none focus:border-slate-900 font-black text-center text-slate-900 tracking-[1em] text-3xl mb-10 shadow-inner text-center" />
-            <button onClick={() => adminPassword === ADMIN_PASSWORD_SECRET ? (setIsAdminAuthenticated(true), setView('admin')) : showToast("Код неверен")} className="w-full bg-slate-900 text-white py-6 rounded-2xl font-black uppercase shadow-xl">Войти</button>
+            <button onClick={() => adminPassword === ADMIN_PASSWORD_SECRET ? (setIsAdminAuthenticated(true), setView('admin')) : showToast("Ошибка")} className="w-full bg-slate-900 text-white py-6 rounded-2xl font-black uppercase shadow-xl">Войти</button>
           </div>
         </div>
       );
@@ -306,19 +290,19 @@ const App = () => {
             <div className="bg-emerald-950 p-8 rounded-[3rem] mb-12 shadow-2xl flex flex-col md:flex-row items-center gap-6 border-4 border-emerald-500/20 text-center">
                 <div className="bg-emerald-500 p-4 rounded-2xl"><Key className="text-white w-8 h-8" /></div>
                 <div className="flex-1 text-left">
-                    <h3 className="text-white font-black uppercase text-sm mb-1 text-left">Ключ Groq API (Llama 3)</h3>
-                    <p className="text-emerald-400 text-[10px] font-bold uppercase tracking-widest text-left">Вставьте ключ Groq (начинается на gsk_)</p>
+                    <h3 className="text-white font-black uppercase text-sm mb-1 text-left">Ключ Gemini API (Для ИИ)</h3>
+                    <p className="text-emerald-400 text-[10px] font-bold uppercase tracking-widest text-left">Введите ваш рабочий ключ здесь.</p>
                 </div>
                 <input 
                     type="password" 
-                    value={sessionAiKey} 
-                    onChange={(e) => setSessionAiKey(e.target.value)}
-                    placeholder="gsk_..." 
+                    value={sessionGeminiKey} 
+                    onChange={(e) => setSessionGeminiKey(e.target.value)}
+                    placeholder="AIzaSy..." 
                     className="flex-1 p-5 bg-white/10 border-2 border-white/10 rounded-2xl text-white font-mono text-sm outline-none focus:border-emerald-500"
                 />
             </div>
 
-            {/* БЛОК ДИАГНОСТИКИ */}
+            {/* БЛОК ДИАГНОСТИКИ С ПОДРОБНОЙ ОШИБКОЙ */}
             {debugLog && (
                 <div className="bg-red-950 p-6 rounded-2xl mb-10 border-2 border-red-500 text-left text-red-200 font-mono text-xs overflow-auto max-w-4xl mx-auto whitespace-pre-wrap">
                     <div className="font-bold mb-2 flex items-center gap-2"><Bug className="w-4 h-4"/> ДИАГНОСТИКА:</div>
@@ -354,14 +338,14 @@ const App = () => {
             <div className="max-w-5xl w-full bg-white rounded-[4rem] p-12 sm:p-20 shadow-2xl relative text-center flex flex-col items-center">
                 <button onClick={() => setView('admin')} className="absolute top-12 left-12 text-slate-400 font-black uppercase text-[10px] flex items-center gap-3 hover:text-slate-900 transition-all self-start text-left"><ArrowLeft className="w-5 h-5" /> Назад</button>
                 <div className="bg-emerald-100 w-24 h-24 rounded-3xl mb-10 flex items-center justify-center text-center"><Plus className="w-12 h-12 text-emerald-600"/></div>
-                <h2 className="text-4xl font-black text-slate-900 uppercase mb-2 tracking-tight text-center">Создание ИИ Теста (Groq)</h2>
+                <h2 className="text-4xl font-black text-slate-900 uppercase mb-2 tracking-tight text-center">Создание ИИ Теста</h2>
                 <div className="space-y-6 text-left w-full mt-10">
                     <input type="text" value={inputTitle} onChange={e => setInputTitle(e.target.value)} placeholder="Тема теста" className="w-full p-8 bg-slate-50 border-2 border-transparent rounded-3xl focus:bg-white focus:border-emerald-600 font-bold text-slate-900 text-center uppercase shadow-inner text-xl" />
                     <textarea value={inputText} onChange={e => setInputText(e.target.value)} placeholder="Вставьте учебный материал..." className="w-full h-[400px] p-10 bg-slate-50 border-2 border-transparent rounded-[3rem] focus:bg-white focus:border-emerald-600 outline-none resize-none font-bold text-slate-700 text-lg shadow-inner scrollbar-hide text-left" />
                 </div>
                 <button disabled={isLoading || !inputText || !inputTitle} onClick={() => handleGenerateTest()} className="w-full mt-10 bg-emerald-600 hover:bg-emerald-500 text-white font-black py-8 rounded-[2.5rem] shadow-2xl active:scale-95 transition-all uppercase tracking-[0.2em] shadow-emerald-500/20 text-xl flex items-center justify-center gap-6 text-center">
                   {isLoading ? <Loader2 className="animate-spin w-8 h-8 text-center"/> : <RefreshCw className="w-8 h-8 text-center"/>} 
-                  {isLoading ? "ГЕНЕРАЦИЯ (GROQ)..." : "СФОРМИРОВАТЬ ТЕСТ"}
+                  {isLoading ? "ГЕНЕРАЦИЯ..." : "СФОРМИРОВАТЬ ТЕСТ"}
                 </button>
             </div>
         </div>
