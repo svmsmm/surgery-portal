@@ -134,7 +134,7 @@ const App = () => {
     return `${min}:${sec < 10 ? '0' + sec : sec}`;
   };
 
-  // --- ЛОГИКА ГЕНЕРАЦИИ (ТОЛЬКО V1BETA + ОТЛАДКА) ---
+  // --- ЛОГИКА ГЕНЕРАЦИИ (ПЕРЕБОР ВСЕХ МОДЕЛЕЙ) ---
   const handleGenerateTest = async (existing = null) => {
     setDebugLog(""); // Очистка
     const text = existing ? existing.content : inputText;
@@ -148,36 +148,66 @@ const App = () => {
 
     setIsLoading(true);
 
-    // Используем только v1beta - она работала в утилите
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${sessionGeminiKey}`;
-    
-    const prompt = `
-      You are a medical professor. 
-      Generate exactly 30 multiple-choice questions in Russian based on the text below.
-      OUTPUT ONLY RAW JSON ARRAY. NO MARKDOWN.
-      [{"text": "Question?", "options": ["A", "B", "C", "D"], "correctIndex": 0}]
+    // СПИСОК ВСЕХ ВОЗМОЖНЫХ ВАРИАНТОВ (ОТ НОВЫХ К СТАРЫМ)
+    const modelsToTry = [
+        "gemini-1.5-flash",
+        "gemini-1.5-flash-latest",
+        "gemini-1.5-flash-001",
+        "gemini-1.5-pro",
+        "gemini-1.0-pro",
+        "gemini-pro"
+    ];
 
-      TEXT:
-      ${text.substring(0, 45000)}
-    `;
+    let successData = null;
+    let usedModel = "";
+    let lastErrorDetails = "";
 
     try {
-      const res = await fetch(url, {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
-      });
+      // Цикл попыток
+      for (const modelName of modelsToTry) {
+          try {
+              // Пробуем v1beta, так как она поддерживает большинство моделей
+              const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${sessionGeminiKey}`;
+              
+              const prompt = `
+                You are a medical professor. 
+                Generate exactly 30 multiple-choice questions in Russian based on the text below.
+                OUTPUT ONLY RAW JSON ARRAY. NO MARKDOWN.
+                [{"text": "Question?", "options": ["A", "B", "C", "D"], "correctIndex": 0}]
+                TEXT: ${text.substring(0, 45000)}
+              `;
 
-      const data = await res.json();
-      
-      if (!res.ok) {
-        // Выводим полный ответ сервера для диагностики
-        const errorString = JSON.stringify(data, null, 2);
-        setDebugLog(`ОШИБКА API (${res.status}):\n${errorString}`);
-        throw new Error(data.error?.message || "Ошибка API");
+              console.log(`Trying model: ${modelName}`);
+
+              const res = await fetch(url, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
+              });
+
+              const data = await res.json();
+              
+              if (res.ok) {
+                  successData = data;
+                  usedModel = modelName;
+                  break; // Успех! Выходим из цикла.
+              } else {
+                  // Логируем ошибку, но не останавливаемся, если это 404 (модель не найдена)
+                  const errMsg = data.error?.message || res.statusText;
+                  lastErrorDetails += `\nModel ${modelName}: ${errMsg}`;
+                  // Если ошибка 400 (Bad Request) или 403 (Forbidden) - возможно дело в ключе, но пробуем дальше
+              }
+          } catch (err) {
+              lastErrorDetails += `\nNetwork error ${modelName}: ${err.message}`;
+          }
       }
 
-      let rawContent = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
+      if (!successData) {
+          setDebugLog(`ВСЕ МОДЕЛИ НЕДОСТУПНЫ.\nДетали:${lastErrorDetails}`);
+          throw new Error("Не удалось подобрать рабочую модель ИИ.");
+      }
+
+      let rawContent = successData.candidates?.[0]?.content?.parts?.[0]?.text || "";
       
       const start = rawContent.indexOf('[');
       const end = rawContent.lastIndexOf(']') + 1;
@@ -194,13 +224,12 @@ const App = () => {
         title, content: text, questions, updatedAt: Date.now(), isVisible: existing?.isVisible ?? false 
       });
       
-      showToast("Тест успешно создан!");
+      showToast(`Тест создан! (Модель: ${usedModel})`);
       setView('admin-materials');
       setInputText(''); setInputTitle('');
     } catch (e) { 
       console.error(e);
-      // Если лог еще не записан, записываем сообщение исключения
-      setDebugLog(prev => prev || e.message); 
+      if (!debugLog) setDebugLog(e.message); 
       showToast("ОШИБКА! См. лог ниже.");
     } finally { setIsLoading(false); }
   };
@@ -217,7 +246,7 @@ const App = () => {
       await setDoc(doc(db, 'artifacts', PORTAL_ID, 'public', 'data', 'task_sections', crypto.randomUUID()), { title: inputTitle, tasks, createdAt: Date.now(), isVisible: false, isAnswersEnabled: false });
       showToast("Задачи сохранены!");
       setView('admin-tasks-list');
-    } catch (e) { showToast("Ошибка!"); } finally { setIsLoading(false); }
+    } catch (e) { showToast("Ошибка сохранения"); } finally { setIsLoading(false); }
   };
 
   const finishQuiz = async () => {
@@ -294,7 +323,7 @@ const App = () => {
                 <div className="bg-emerald-500 p-4 rounded-2xl"><Key className="text-white w-8 h-8" /></div>
                 <div className="flex-1 text-left">
                     <h3 className="text-white font-black uppercase text-sm mb-1 text-left">Ключ Gemini API</h3>
-                    <p className="text-emerald-400 text-[10px] font-bold uppercase tracking-widest text-left">Введите рабочий ключ здесь.</p>
+                    <p className="text-emerald-400 text-[10px] font-bold uppercase tracking-widest text-left">Введите ваш рабочий ключ здесь.</p>
                 </div>
                 <input 
                     type="password" 
@@ -336,7 +365,6 @@ const App = () => {
           </div>
         </div>
       );
-
       case 'setup-test': return (
         <div className="min-h-screen bg-slate-900 flex items-center justify-center p-4">
             <div className="max-w-5xl w-full bg-white rounded-[4rem] p-12 sm:p-20 shadow-2xl relative text-center flex flex-col items-center">
@@ -354,7 +382,6 @@ const App = () => {
             </div>
         </div>
       );
-
       // (Остальные экраны: admin-materials, admin-tasks-list, setup-tasks, student-select-test, student-select-tasks, quiz, result - добавлены в код для полноты)
       case 'admin-materials': return <div className="p-10 bg-slate-50 min-h-screen text-center flex flex-col items-center"><button onClick={() => setView('admin')} className="mb-10 text-slate-400 font-black uppercase text-xs flex items-center gap-2 self-start"><ArrowLeft className="w-4 h-4" /> Назад</button><div className="grid gap-4 max-w-4xl w-full">{materials.map(m => <div key={m.id} className="bg-white p-6 rounded-2xl shadow flex justify-between items-center text-left"><h4 className="font-black text-slate-900 uppercase text-left">{m.title}</h4><div className="flex gap-4"><button onClick={() => updateDoc(doc(db, 'artifacts', PORTAL_ID, 'public', 'data', 'materials', m.id), {isVisible: !m.isVisible})} className={`p-4 rounded-xl ${m.isVisible ? 'bg-emerald-500 text-white' : 'bg-slate-100 text-slate-400'}`}>{m.isVisible ? <Unlock className="w-5 h-5"/> : <Lock className="w-5 h-5"/>}</button><button onClick={() => deleteDoc(doc(db, 'artifacts', PORTAL_ID, 'public', 'data', 'materials', m.id))} className="p-4 bg-red-50 text-red-500 rounded-xl"><Trash2 className="w-5 h-5"/></button></div></div>)}</div></div>;
       case 'admin-tasks-list': return <div className="p-10 bg-slate-50 min-h-screen text-center flex flex-col items-center"><button onClick={() => setView('admin')} className="mb-10 text-slate-400 font-black uppercase text-xs flex items-center gap-2 self-start"><ArrowLeft className="w-4 h-4" /> Назад</button><button onClick={() => setView('setup-tasks')} className="mb-6 w-full max-w-4xl bg-slate-900 text-white py-6 rounded-2xl font-black uppercase text-xs">Добавить задачи</button><div className="grid gap-4 max-w-4xl w-full">{taskSections.map(s => <div key={s.id} className="bg-white p-6 rounded-2xl shadow flex justify-between items-center text-left"><h4 className="font-black text-slate-900 uppercase text-left">{s.title}</h4><div className="flex gap-4"><button onClick={() => updateDoc(doc(db, 'artifacts', PORTAL_ID, 'public', 'data', 'task_sections', s.id), {isVisible: !s.isVisible})} className={`p-4 rounded-xl ${s.isVisible ? 'bg-blue-500 text-white' : 'bg-slate-100 text-slate-400'}`}>{s.isVisible ? <Unlock className="w-5 h-5"/> : <Lock className="w-5 h-5"/>}</button><button onClick={() => deleteDoc(doc(db, 'artifacts', PORTAL_ID, 'public', 'data', 'task_sections', s.id))} className="p-4 bg-red-50 text-red-500 rounded-xl"><Trash2 className="w-5 h-5"/></button></div></div>)}</div></div>;
