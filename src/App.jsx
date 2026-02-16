@@ -4,7 +4,7 @@ import {
   Loader2, FileText, Eye, ShieldCheck, GraduationCap, ClipboardList, 
   Stethoscope, Clock, AlertCircle, FileSearch, Timer, Plus, 
   RefreshCw, Trash2, BookOpen, Lock, Unlock, EyeOff, ArrowLeft, ArrowRight,
-  Trophy, Settings, Key, AlertTriangle, Bug
+  Trophy, Settings, Key, Zap, Bug
 } from 'lucide-react';
 import { initializeApp, getApps } from 'firebase/app';
 import { 
@@ -15,7 +15,7 @@ import {
   getAuth, signInAnonymously, onAuthStateChanged 
 } from 'firebase/auth';
 
-// --- КОНФИГУРАЦИЯ FIREBASE ---
+// --- FIREBASE ---
 const firebaseConfig = {
   apiKey: "AIzaSyCgoD4vZCEU2W_w3TzE3102JcnlXnocmMg",
   authDomain: "surgery-app-89c4c.firebaseapp.com",
@@ -47,16 +47,15 @@ const App = () => {
   const [studentName, setStudentName] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [toastMessage, setToastMessage] = useState(null);
-  
-  // Переменная для вывода полной ошибки на экран
   const [debugLog, setDebugLog] = useState(""); 
 
-  const [sessionGeminiKey, setSessionGeminiKey] = useState("");
+  // Ключ теперь для Groq (начинается на gsk_...)
+  const [sessionAiKey, setSessionAiKey] = useState("");
 
   useEffect(() => {
     try {
-      if (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_GEMINI_KEY) {
-        setSessionGeminiKey(import.meta.env.VITE_GEMINI_KEY);
+      if (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_GROQ_KEY) {
+        setSessionAiKey(import.meta.env.VITE_GROQ_KEY);
       }
     } catch (e) {}
   }, []);
@@ -83,7 +82,7 @@ const App = () => {
   useEffect(() => {
     if (!isFirebaseReady || !auth) return;
     const unsubscribe = onAuthStateChanged(auth, (u) => {
-      if (!u) signInAnonymously(auth).catch(e => setDebugLog("Auth Error: " + e.message));
+      if (!u) signInAnonymously(auth).catch(e => console.error(e));
       else setUser(u);
     });
     return () => unsubscribe();
@@ -134,102 +133,87 @@ const App = () => {
     return `${min}:${sec < 10 ? '0' + sec : sec}`;
   };
 
-  // --- ЛОГИКА ГЕНЕРАЦИИ (ПЕРЕБОР ВСЕХ МОДЕЛЕЙ) ---
+  // --- ЛОГИКА ГЕНЕРАЦИИ ЧЕРЕЗ GROQ (LLAMA 3) ---
   const handleGenerateTest = async (existing = null) => {
-    setDebugLog(""); // Очистка
+    setDebugLog(""); 
     const text = existing ? existing.content : inputText;
     const title = existing ? existing.title : inputTitle;
     
     if (!text.trim() || !title.trim()) return showToast("Заполните поля!");
-    if (!sessionGeminiKey) {
-        setDebugLog("Ключ отсутствует в переменной sessionGeminiKey");
-        return showToast("ВВЕДИТЕ КЛЮЧ!");
-    }
+    if (!sessionAiKey) return showToast("ВВЕДИТЕ КЛЮЧ GROQ В ЗЕЛЕНОЕ ПОЛЕ!");
 
     setIsLoading(true);
-
-    // СПИСОК ВСЕХ ВОЗМОЖНЫХ ВАРИАНТОВ (ОТ НОВЫХ К СТАРЫМ)
-    const modelsToTry = [
-        "gemini-1.5-flash",
-        "gemini-1.5-flash-latest",
-        "gemini-1.5-flash-001",
-        "gemini-1.5-pro",
-        "gemini-1.0-pro",
-        "gemini-pro"
-    ];
-
-    let successData = null;
-    let usedModel = "";
-    let lastErrorDetails = "";
-
+    
     try {
-      // Цикл попыток
-      for (const modelName of modelsToTry) {
-          try {
-              // Пробуем v1beta, так как она поддерживает большинство моделей
-              const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${sessionGeminiKey}`;
-              
-              const prompt = `
-                You are a medical professor. 
-                Generate exactly 30 multiple-choice questions in Russian based on the text below.
-                OUTPUT ONLY RAW JSON ARRAY. NO MARKDOWN.
-                [{"text": "Question?", "options": ["A", "B", "C", "D"], "correctIndex": 0}]
-                TEXT: ${text.substring(0, 45000)}
-              `;
+      const url = "https://api.groq.com/openai/v1/chat/completions";
+      
+      const prompt = `
+        Ты - профессор медицины. Твоя задача: на основе текста ниже создать ровно 30 тестовых вопросов на русском языке.
+        
+        ФОРМАТ ОТВЕТА:
+        Ты должен вернуть ТОЛЬКО валидный JSON массив. Никакого текста до или после.
+        Структура: [{"text": "Вопрос?", "options": ["Вариант А", "Вариант Б", "Вариант В", "Вариант Г"], "correctIndex": 0}]
+        
+        ТЕКСТ ЛЕКЦИИ:
+        ${text.substring(0, 30000)}
+      `;
 
-              console.log(`Trying model: ${modelName}`);
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${sessionAiKey}`
+        },
+        body: JSON.stringify({
+          model: "llama3-8b-8192", // Используем быструю и умную модель от Meta
+          messages: [{ role: "user", content: prompt }],
+          temperature: 0.1,
+          response_format: { type: "json_object" } // Groq поддерживает гарантированный JSON!
+        })
+      });
 
-              const res = await fetch(url, {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
-              });
-
-              const data = await res.json();
-              
-              if (res.ok) {
-                  successData = data;
-                  usedModel = modelName;
-                  break; // Успех! Выходим из цикла.
-              } else {
-                  // Логируем ошибку, но не останавливаемся, если это 404 (модель не найдена)
-                  const errMsg = data.error?.message || res.statusText;
-                  lastErrorDetails += `\nModel ${modelName}: ${errMsg}`;
-                  // Если ошибка 400 (Bad Request) или 403 (Forbidden) - возможно дело в ключе, но пробуем дальше
-              }
-          } catch (err) {
-              lastErrorDetails += `\nNetwork error ${modelName}: ${err.message}`;
-          }
+      const data = await res.json();
+      
+      if (!res.ok) {
+        const msg = data.error?.message || "Ошибка Groq API";
+        setDebugLog(`API ERROR: ${msg}`);
+        throw new Error(msg);
       }
 
-      if (!successData) {
-          setDebugLog(`ВСЕ МОДЕЛИ НЕДОСТУПНЫ.\nДетали:${lastErrorDetails}`);
-          throw new Error("Не удалось подобрать рабочую модель ИИ.");
+      let rawContent = data.choices[0].message.content;
+      
+      // Иногда Llama возвращает объект { "questions": [...] }, а иногда просто массив. 
+      // Проверим и нормализуем.
+      let questions;
+      try {
+        const parsed = JSON.parse(rawContent);
+        if (Array.isArray(parsed)) {
+            questions = parsed;
+        } else if (parsed.questions && Array.isArray(parsed.questions)) {
+            questions = parsed.questions;
+        } else {
+            // Если структура сложнее, попробуем найти массив в тексте (резервный вариант)
+            throw new Error("Complex JSON structure");
+        }
+      } catch (parseErr) {
+          // Резервный парсинг (если вернулся не чистый JSON)
+          const start = rawContent.indexOf('[');
+          const end = rawContent.lastIndexOf(']') + 1;
+          if (start === -1) throw new Error("JSON не найден в ответе.");
+          questions = JSON.parse(rawContent.substring(start, end));
       }
-
-      let rawContent = successData.candidates?.[0]?.content?.parts?.[0]?.text || "";
-      
-      const start = rawContent.indexOf('[');
-      const end = rawContent.lastIndexOf(']') + 1;
-      
-      if (start === -1 || end <= 0) {
-          setDebugLog("Ответ не содержит JSON. Сырой ответ:\n" + rawContent.substring(0, 200) + "...");
-          throw new Error("Неверный формат ответа");
-      }
-      
-      const cleanJson = rawContent.substring(start, end);
-      const questions = JSON.parse(cleanJson);
       
       await setDoc(doc(db, 'artifacts', PORTAL_ID, 'public', 'data', 'materials', existing?.id || crypto.randomUUID()), { 
         title, content: text, questions, updatedAt: Date.now(), isVisible: existing?.isVisible ?? false 
       });
       
-      showToast(`Тест создан! (Модель: ${usedModel})`);
+      showToast("Тест успешно создан (Llama 3)!");
       setView('admin-materials');
       setInputText(''); setInputTitle('');
+
     } catch (e) { 
       console.error(e);
-      if (!debugLog) setDebugLog(e.message); 
+      setDebugLog(prev => prev + "\n" + e.message); 
       showToast("ОШИБКА! См. лог ниже.");
     } finally { setIsLoading(false); }
   };
@@ -265,7 +249,7 @@ const App = () => {
 
     switch (view) {
       case 'welcome': return (
-        <div className="min-h-screen w-full bg-slate-950 flex items-center justify-center p-4">
+        <div className="min-h-screen bg-slate-950 flex items-center justify-center p-4">
           <div className="max-w-md w-full bg-white rounded-[3rem] p-10 shadow-2xl text-center flex flex-col items-center">
             <div className="bg-emerald-500 w-16 h-16 rounded-2xl mb-6 flex items-center justify-center shadow-xl"><GraduationCap className="text-white w-10 h-10" /></div>
             <h1 className="text-3xl font-black text-slate-900 mb-2 uppercase tracking-tight">Госпитальная хирургия</h1>
@@ -322,19 +306,19 @@ const App = () => {
             <div className="bg-emerald-950 p-8 rounded-[3rem] mb-12 shadow-2xl flex flex-col md:flex-row items-center gap-6 border-4 border-emerald-500/20 text-center">
                 <div className="bg-emerald-500 p-4 rounded-2xl"><Key className="text-white w-8 h-8" /></div>
                 <div className="flex-1 text-left">
-                    <h3 className="text-white font-black uppercase text-sm mb-1 text-left">Ключ Gemini API</h3>
-                    <p className="text-emerald-400 text-[10px] font-bold uppercase tracking-widest text-left">Введите ваш рабочий ключ здесь.</p>
+                    <h3 className="text-white font-black uppercase text-sm mb-1 text-left">Ключ Groq API (Llama 3)</h3>
+                    <p className="text-emerald-400 text-[10px] font-bold uppercase tracking-widest text-left">Вставьте ключ Groq (начинается на gsk_)</p>
                 </div>
                 <input 
                     type="password" 
-                    value={sessionGeminiKey} 
-                    onChange={(e) => setSessionGeminiKey(e.target.value)}
-                    placeholder="AIzaSy..." 
+                    value={sessionAiKey} 
+                    onChange={(e) => setSessionAiKey(e.target.value)}
+                    placeholder="gsk_..." 
                     className="flex-1 p-5 bg-white/10 border-2 border-white/10 rounded-2xl text-white font-mono text-sm outline-none focus:border-emerald-500"
                 />
             </div>
 
-            {/* БЛОК ДИАГНОСТИКИ С ПОДРОБНОЙ ОШИБКОЙ */}
+            {/* БЛОК ДИАГНОСТИКИ */}
             {debugLog && (
                 <div className="bg-red-950 p-6 rounded-2xl mb-10 border-2 border-red-500 text-left text-red-200 font-mono text-xs overflow-auto max-w-4xl mx-auto whitespace-pre-wrap">
                     <div className="font-bold mb-2 flex items-center gap-2"><Bug className="w-4 h-4"/> ДИАГНОСТИКА:</div>
@@ -370,19 +354,18 @@ const App = () => {
             <div className="max-w-5xl w-full bg-white rounded-[4rem] p-12 sm:p-20 shadow-2xl relative text-center flex flex-col items-center">
                 <button onClick={() => setView('admin')} className="absolute top-12 left-12 text-slate-400 font-black uppercase text-[10px] flex items-center gap-3 hover:text-slate-900 transition-all self-start text-left"><ArrowLeft className="w-5 h-5" /> Назад</button>
                 <div className="bg-emerald-100 w-24 h-24 rounded-3xl mb-10 flex items-center justify-center text-center"><Plus className="w-12 h-12 text-emerald-600"/></div>
-                <h2 className="text-4xl font-black text-slate-900 uppercase mb-2 tracking-tight text-center">Создание ИИ Теста</h2>
+                <h2 className="text-4xl font-black text-slate-900 uppercase mb-2 tracking-tight text-center">Создание ИИ Теста (Groq)</h2>
                 <div className="space-y-6 text-left w-full mt-10">
                     <input type="text" value={inputTitle} onChange={e => setInputTitle(e.target.value)} placeholder="Тема теста" className="w-full p-8 bg-slate-50 border-2 border-transparent rounded-3xl focus:bg-white focus:border-emerald-600 font-bold text-slate-900 text-center uppercase shadow-inner text-xl" />
                     <textarea value={inputText} onChange={e => setInputText(e.target.value)} placeholder="Вставьте учебный материал..." className="w-full h-[400px] p-10 bg-slate-50 border-2 border-transparent rounded-[3rem] focus:bg-white focus:border-emerald-600 outline-none resize-none font-bold text-slate-700 text-lg shadow-inner scrollbar-hide text-left" />
                 </div>
                 <button disabled={isLoading || !inputText || !inputTitle} onClick={() => handleGenerateTest()} className="w-full mt-10 bg-emerald-600 hover:bg-emerald-500 text-white font-black py-8 rounded-[2.5rem] shadow-2xl active:scale-95 transition-all uppercase tracking-[0.2em] shadow-emerald-500/20 text-xl flex items-center justify-center gap-6 text-center">
                   {isLoading ? <Loader2 className="animate-spin w-8 h-8 text-center"/> : <RefreshCw className="w-8 h-8 text-center"/>} 
-                  {isLoading ? "ГЕНЕРАЦИЯ..." : "СФОРМИРОВАТЬ ТЕСТ"}
+                  {isLoading ? "ГЕНЕРАЦИЯ (GROQ)..." : "СФОРМИРОВАТЬ ТЕСТ"}
                 </button>
             </div>
         </div>
       );
-      // (Остальные экраны: admin-materials, admin-tasks-list, setup-tasks, student-select-test, student-select-tasks, quiz, result - добавлены в код для полноты)
       case 'admin-materials': return <div className="p-10 bg-slate-50 min-h-screen text-center flex flex-col items-center"><button onClick={() => setView('admin')} className="mb-10 text-slate-400 font-black uppercase text-xs flex items-center gap-2 self-start"><ArrowLeft className="w-4 h-4" /> Назад</button><div className="grid gap-4 max-w-4xl w-full">{materials.map(m => <div key={m.id} className="bg-white p-6 rounded-2xl shadow flex justify-between items-center text-left"><h4 className="font-black text-slate-900 uppercase text-left">{m.title}</h4><div className="flex gap-4"><button onClick={() => updateDoc(doc(db, 'artifacts', PORTAL_ID, 'public', 'data', 'materials', m.id), {isVisible: !m.isVisible})} className={`p-4 rounded-xl ${m.isVisible ? 'bg-emerald-500 text-white' : 'bg-slate-100 text-slate-400'}`}>{m.isVisible ? <Unlock className="w-5 h-5"/> : <Lock className="w-5 h-5"/>}</button><button onClick={() => deleteDoc(doc(db, 'artifacts', PORTAL_ID, 'public', 'data', 'materials', m.id))} className="p-4 bg-red-50 text-red-500 rounded-xl"><Trash2 className="w-5 h-5"/></button></div></div>)}</div></div>;
       case 'admin-tasks-list': return <div className="p-10 bg-slate-50 min-h-screen text-center flex flex-col items-center"><button onClick={() => setView('admin')} className="mb-10 text-slate-400 font-black uppercase text-xs flex items-center gap-2 self-start"><ArrowLeft className="w-4 h-4" /> Назад</button><button onClick={() => setView('setup-tasks')} className="mb-6 w-full max-w-4xl bg-slate-900 text-white py-6 rounded-2xl font-black uppercase text-xs">Добавить задачи</button><div className="grid gap-4 max-w-4xl w-full">{taskSections.map(s => <div key={s.id} className="bg-white p-6 rounded-2xl shadow flex justify-between items-center text-left"><h4 className="font-black text-slate-900 uppercase text-left">{s.title}</h4><div className="flex gap-4"><button onClick={() => updateDoc(doc(db, 'artifacts', PORTAL_ID, 'public', 'data', 'task_sections', s.id), {isVisible: !s.isVisible})} className={`p-4 rounded-xl ${s.isVisible ? 'bg-blue-500 text-white' : 'bg-slate-100 text-slate-400'}`}>{s.isVisible ? <Unlock className="w-5 h-5"/> : <Lock className="w-5 h-5"/>}</button><button onClick={() => deleteDoc(doc(db, 'artifacts', PORTAL_ID, 'public', 'data', 'task_sections', s.id))} className="p-4 bg-red-50 text-red-500 rounded-xl"><Trash2 className="w-5 h-5"/></button></div></div>)}</div></div>;
       case 'setup-tasks': return <div className="min-h-screen bg-slate-950 flex items-center justify-center p-4"><div className="max-w-4xl w-full bg-white p-10 rounded-[3rem] text-center flex flex-col items-center"><button onClick={() => setView('admin-tasks-list')} className="mb-8 text-slate-400 font-black uppercase text-xs flex items-center gap-2 self-start"><ArrowLeft className="w-4 h-4" /> Назад</button><h2 className="text-3xl font-black uppercase mb-6">Новые задачи</h2><input value={inputTitle} onChange={e => setInputTitle(e.target.value)} className="w-full p-6 bg-slate-50 rounded-2xl mb-4 font-bold text-center" placeholder="Название темы" /><textarea value={inputText} onChange={e => setInputText(e.target.value)} className="w-full h-64 p-6 bg-slate-50 rounded-2xl mb-6 font-bold text-left" placeholder="Задача [ТЕКСТ] Ответ [ЭТАЛОН]..." /><button onClick={handleSaveTasks} className="w-full bg-blue-600 text-white py-6 rounded-2xl font-black uppercase">Загрузить</button></div></div>;
