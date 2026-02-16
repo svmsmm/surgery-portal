@@ -4,7 +4,7 @@ import {
   Loader2, FileText, Eye, ShieldCheck, GraduationCap, ClipboardList, 
   Stethoscope, Clock, AlertCircle, FileSearch, Timer, Plus, 
   RefreshCw, Trash2, BookOpen, Lock, Unlock, EyeOff, ArrowLeft, ArrowRight,
-  Trophy, Settings, Key, AlertTriangle
+  Trophy, Settings, Key, AlertTriangle, Bug
 } from 'lucide-react';
 import { initializeApp, getApps } from 'firebase/app';
 import { 
@@ -48,13 +48,16 @@ const App = () => {
   const [isLoading, setIsLoading] = useState(false);
   const [toastMessage, setToastMessage] = useState(null);
   
+  // Переменная для вывода полной ошибки на экран
   const [debugLog, setDebugLog] = useState(""); 
+
   const [sessionGeminiKey, setSessionGeminiKey] = useState("");
 
   useEffect(() => {
     try {
-      const metaEnv = typeof import.meta !== 'undefined' ? import.meta.env : null;
-      if (metaEnv?.VITE_GEMINI_KEY) setSessionGeminiKey(metaEnv.VITE_GEMINI_KEY);
+      if (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_GEMINI_KEY) {
+        setSessionGeminiKey(import.meta.env.VITE_GEMINI_KEY);
+      }
     } catch (e) {}
   }, []);
 
@@ -80,7 +83,7 @@ const App = () => {
   useEffect(() => {
     if (!isFirebaseReady || !auth) return;
     const unsubscribe = onAuthStateChanged(auth, (u) => {
-      if (!u) signInAnonymously(auth).catch(e => console.error(e));
+      if (!u) signInAnonymously(auth).catch(e => setDebugLog("Auth Error: " + e.message));
       else setUser(u);
     });
     return () => unsubscribe();
@@ -131,81 +134,56 @@ const App = () => {
     return `${min}:${sec < 10 ? '0' + sec : sec}`;
   };
 
-  // --- УМНЫЙ ПЕРЕБОР МОДЕЛЕЙ (РАСШИРЕННЫЙ СПИСОК) ---
+  // --- ЛОГИКА ГЕНЕРАЦИИ (ТОЛЬКО V1BETA + ОТЛАДКА) ---
   const handleGenerateTest = async (existing = null) => {
-    setDebugLog(""); 
+    setDebugLog(""); // Очистка
     const text = existing ? existing.content : inputText;
     const title = existing ? existing.title : inputTitle;
     
     if (!text.trim() || !title.trim()) return showToast("Заполните поля!");
-    if (!sessionGeminiKey) return showToast("Сначала введите API Ключ!");
+    if (!sessionGeminiKey) {
+        setDebugLog("Ключ отсутствует в переменной sessionGeminiKey");
+        return showToast("ВВЕДИТЕ КЛЮЧ!");
+    }
 
     setIsLoading(true);
 
-    // МЫ ПРОБУЕМ ВСЕ ВОЗМОЖНЫЕ ВАРИАНТЫ МОДЕЛЕЙ
-    const endpoints = [
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${sessionGeminiKey}`,
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=${sessionGeminiKey}`,
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-001:generateContent?key=${sessionGeminiKey}`,
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.0-pro:generateContent?key=${sessionGeminiKey}`,
-      `https://generativelanguage.googleapis.com/v1/models/gemini-pro:generateContent?key=${sessionGeminiKey}`
-    ];
-
-    const safeText = text.substring(0, 45000);
+    // Используем только v1beta - она работала в утилите
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${sessionGeminiKey}`;
     
-    // Промпт без лишних настроек
     const prompt = `
       You are a medical professor. 
-      Generate exactly 30 multiple-choice questions in Russian based on the text.
-      STRICT JSON ARRAY FORMAT ONLY. No markdown. No code blocks.
+      Generate exactly 30 multiple-choice questions in Russian based on the text below.
+      OUTPUT ONLY RAW JSON ARRAY. NO MARKDOWN.
       [{"text": "Question?", "options": ["A", "B", "C", "D"], "correctIndex": 0}]
+
       TEXT:
-      ${safeText}
+      ${text.substring(0, 45000)}
     `;
 
-    let successData = null;
-    let lastError = "";
-
     try {
-      for (const url of endpoints) {
-        try {
-          console.log("Trying:", url);
-          const res = await fetch(url, {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
-          });
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
+      });
 
-          const data = await res.json();
-          
-          if (res.ok) {
-            successData = data;
-            break; 
-          } else {
-            const msg = data.error?.message || res.statusText;
-            console.warn(`Failed ${url}: ${msg}`);
-            lastError = `${url.split('/models/')[1].split(':')[0]}: ${msg}`; // Запоминаем модель и ошибку
-            // Если квота - нет смысла продолжать
-            if (res.status === 429) throw new Error("Лимит квоты исчерпан.");
-          }
-        } catch (e) {
-          lastError = e.message;
-          if (e.message.includes("Лимит")) break;
-        }
+      const data = await res.json();
+      
+      if (!res.ok) {
+        // Выводим полный ответ сервера для диагностики
+        const errorString = JSON.stringify(data, null, 2);
+        setDebugLog(`ОШИБКА API (${res.status}):\n${errorString}`);
+        throw new Error(data.error?.message || "Ошибка API");
       }
 
-      if (!successData) {
-        setDebugLog(`Ошибка подключения. Последняя попытка: ${lastError}`);
-        throw new Error("Не удалось подключиться к ИИ.");
-      }
-
-      let rawContent = successData.candidates?.[0]?.content?.parts?.[0]?.text || "";
+      let rawContent = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
       
       const start = rawContent.indexOf('[');
       const end = rawContent.lastIndexOf(']') + 1;
       
       if (start === -1 || end <= 0) {
-          setDebugLog("Ответ ИИ не содержит JSON: " + rawContent.substring(0, 100));
+          setDebugLog("Ответ не содержит JSON. Сырой ответ:\n" + rawContent.substring(0, 200) + "...");
           throw new Error("Неверный формат ответа");
       }
       
@@ -221,8 +199,9 @@ const App = () => {
       setInputText(''); setInputTitle('');
     } catch (e) { 
       console.error(e);
-      if (!debugLog) setDebugLog(e.message); 
-      showToast("ОШИБКА (См. красный лог)");
+      // Если лог еще не записан, записываем сообщение исключения
+      setDebugLog(prev => prev || e.message); 
+      showToast("ОШИБКА! См. лог ниже.");
     } finally { setIsLoading(false); }
   };
 
@@ -257,7 +236,7 @@ const App = () => {
 
     switch (view) {
       case 'welcome': return (
-        <div className="min-h-screen bg-slate-950 flex items-center justify-center p-4">
+        <div className="min-h-screen w-full bg-slate-950 flex items-center justify-center p-4">
           <div className="max-w-md w-full bg-white rounded-[3rem] p-10 shadow-2xl text-center flex flex-col items-center">
             <div className="bg-emerald-500 w-16 h-16 rounded-2xl mb-6 flex items-center justify-center shadow-xl"><GraduationCap className="text-white w-10 h-10" /></div>
             <h1 className="text-3xl font-black text-slate-900 mb-2 uppercase tracking-tight">Госпитальная хирургия</h1>
@@ -270,8 +249,9 @@ const App = () => {
           </div>
         </div>
       );
+
       case 'menu': return (
-        <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center p-4 gap-12 text-center">
+        <div className="min-h-screen w-full bg-slate-950 flex flex-col items-center justify-center p-4 gap-12 text-center">
           <h2 className="text-white text-4xl font-black uppercase tracking-tighter text-center">Меню</h2>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-8 w-full max-w-4xl text-center">
             <button onClick={() => setView('student-select-test')} className="bg-white p-12 rounded-[3.5rem] shadow-2xl border-4 border-transparent hover:border-emerald-500 transition-all group flex flex-col items-center">
@@ -286,8 +266,9 @@ const App = () => {
           <button onClick={() => setView('welcome')} className="text-slate-500 hover:text-white uppercase font-black text-xs tracking-[0.3em] flex items-center gap-2 transition-colors"><ArrowLeft className="w-4 h-4"/> Выход</button>
         </div>
       );
+
       case 'admin-login': return (
-        <div className="min-h-screen bg-slate-950 flex items-center justify-center p-4">
+        <div className="min-h-screen w-full bg-slate-950 flex items-center justify-center p-4">
           <div className="max-w-md w-full bg-white rounded-[3rem] p-12 shadow-2xl flex flex-col items-center text-center">
             <ShieldCheck className="w-16 h-16 text-slate-900 mx-auto mb-10 text-center" />
             <input type="password" value={adminPassword} onChange={(e) => setAdminPassword(e.target.value)} placeholder="••••" className="w-full p-6 bg-slate-50 border-2 border-slate-100 rounded-2xl outline-none focus:border-slate-900 font-black text-center text-slate-900 tracking-[1em] text-3xl mb-10 shadow-inner text-center" />
@@ -295,8 +276,9 @@ const App = () => {
           </div>
         </div>
       );
+
       case 'admin': return (
-        <div className="min-h-screen bg-slate-50 p-6 md:p-12 text-left flex flex-col items-center">
+        <div className="min-h-screen w-full bg-slate-50 p-6 md:p-12 text-left flex flex-col items-center">
           <div className="max-w-7xl w-full">
             <div className="flex flex-col md:flex-row justify-between items-center gap-10 mb-16 text-center">
               <div className="text-left"><h1 className="text-4xl font-black text-slate-900 uppercase tracking-tighter">Управление</h1></div>
@@ -312,15 +294,21 @@ const App = () => {
                 <div className="bg-emerald-500 p-4 rounded-2xl"><Key className="text-white w-8 h-8" /></div>
                 <div className="flex-1 text-left">
                     <h3 className="text-white font-black uppercase text-sm mb-1 text-left">Ключ Gemini API</h3>
-                    <p className="text-emerald-400 text-[10px] font-bold uppercase tracking-widest text-left">Введите ваш рабочий ключ здесь.</p>
+                    <p className="text-emerald-400 text-[10px] font-bold uppercase tracking-widest text-left">Введите рабочий ключ здесь.</p>
                 </div>
-                <input type="password" value={sessionGeminiKey} onChange={(e) => setSessionGeminiKey(e.target.value)} placeholder="AIzaSy..." className="flex-1 p-5 bg-white/10 border-2 border-white/10 rounded-2xl text-white font-mono text-sm outline-none focus:border-emerald-500" />
+                <input 
+                    type="password" 
+                    value={sessionGeminiKey} 
+                    onChange={(e) => setSessionGeminiKey(e.target.value)}
+                    placeholder="AIzaSy..." 
+                    className="flex-1 p-5 bg-white/10 border-2 border-white/10 rounded-2xl text-white font-mono text-sm outline-none focus:border-emerald-500"
+                />
             </div>
 
-            {/* БЛОК ДИАГНОСТИКИ */}
+            {/* БЛОК ДИАГНОСТИКИ С ПОДРОБНОЙ ОШИБКОЙ */}
             {debugLog && (
-                <div className="bg-red-950 p-6 rounded-2xl mb-10 border-2 border-red-500 text-left text-red-200 font-mono text-xs overflow-auto max-w-4xl mx-auto">
-                    <div className="font-bold mb-2">ПОСЛЕДНЯЯ ОШИБКА:</div>
+                <div className="bg-red-950 p-6 rounded-2xl mb-10 border-2 border-red-500 text-left text-red-200 font-mono text-xs overflow-auto max-w-4xl mx-auto whitespace-pre-wrap">
+                    <div className="font-bold mb-2 flex items-center gap-2"><Bug className="w-4 h-4"/> ДИАГНОСТИКА:</div>
                     {debugLog}
                 </div>
             )}
@@ -348,7 +336,7 @@ const App = () => {
           </div>
         </div>
       );
-      // Остальные экраны (setup-test, materials, и т.д.) - код полностью присутствует
+
       case 'setup-test': return (
         <div className="min-h-screen bg-slate-900 flex items-center justify-center p-4">
             <div className="max-w-5xl w-full bg-white rounded-[4rem] p-12 sm:p-20 shadow-2xl relative text-center flex flex-col items-center">
@@ -366,6 +354,8 @@ const App = () => {
             </div>
         </div>
       );
+
+      // (Остальные экраны: admin-materials, admin-tasks-list, setup-tasks, student-select-test, student-select-tasks, quiz, result - добавлены в код для полноты)
       case 'admin-materials': return <div className="p-10 bg-slate-50 min-h-screen text-center flex flex-col items-center"><button onClick={() => setView('admin')} className="mb-10 text-slate-400 font-black uppercase text-xs flex items-center gap-2 self-start"><ArrowLeft className="w-4 h-4" /> Назад</button><div className="grid gap-4 max-w-4xl w-full">{materials.map(m => <div key={m.id} className="bg-white p-6 rounded-2xl shadow flex justify-between items-center text-left"><h4 className="font-black text-slate-900 uppercase text-left">{m.title}</h4><div className="flex gap-4"><button onClick={() => updateDoc(doc(db, 'artifacts', PORTAL_ID, 'public', 'data', 'materials', m.id), {isVisible: !m.isVisible})} className={`p-4 rounded-xl ${m.isVisible ? 'bg-emerald-500 text-white' : 'bg-slate-100 text-slate-400'}`}>{m.isVisible ? <Unlock className="w-5 h-5"/> : <Lock className="w-5 h-5"/>}</button><button onClick={() => deleteDoc(doc(db, 'artifacts', PORTAL_ID, 'public', 'data', 'materials', m.id))} className="p-4 bg-red-50 text-red-500 rounded-xl"><Trash2 className="w-5 h-5"/></button></div></div>)}</div></div>;
       case 'admin-tasks-list': return <div className="p-10 bg-slate-50 min-h-screen text-center flex flex-col items-center"><button onClick={() => setView('admin')} className="mb-10 text-slate-400 font-black uppercase text-xs flex items-center gap-2 self-start"><ArrowLeft className="w-4 h-4" /> Назад</button><button onClick={() => setView('setup-tasks')} className="mb-6 w-full max-w-4xl bg-slate-900 text-white py-6 rounded-2xl font-black uppercase text-xs">Добавить задачи</button><div className="grid gap-4 max-w-4xl w-full">{taskSections.map(s => <div key={s.id} className="bg-white p-6 rounded-2xl shadow flex justify-between items-center text-left"><h4 className="font-black text-slate-900 uppercase text-left">{s.title}</h4><div className="flex gap-4"><button onClick={() => updateDoc(doc(db, 'artifacts', PORTAL_ID, 'public', 'data', 'task_sections', s.id), {isVisible: !s.isVisible})} className={`p-4 rounded-xl ${s.isVisible ? 'bg-blue-500 text-white' : 'bg-slate-100 text-slate-400'}`}>{s.isVisible ? <Unlock className="w-5 h-5"/> : <Lock className="w-5 h-5"/>}</button><button onClick={() => deleteDoc(doc(db, 'artifacts', PORTAL_ID, 'public', 'data', 'task_sections', s.id))} className="p-4 bg-red-50 text-red-500 rounded-xl"><Trash2 className="w-5 h-5"/></button></div></div>)}</div></div>;
       case 'setup-tasks': return <div className="min-h-screen bg-slate-950 flex items-center justify-center p-4"><div className="max-w-4xl w-full bg-white p-10 rounded-[3rem] text-center flex flex-col items-center"><button onClick={() => setView('admin-tasks-list')} className="mb-8 text-slate-400 font-black uppercase text-xs flex items-center gap-2 self-start"><ArrowLeft className="w-4 h-4" /> Назад</button><h2 className="text-3xl font-black uppercase mb-6">Новые задачи</h2><input value={inputTitle} onChange={e => setInputTitle(e.target.value)} className="w-full p-6 bg-slate-50 rounded-2xl mb-4 font-bold text-center" placeholder="Название темы" /><textarea value={inputText} onChange={e => setInputText(e.target.value)} className="w-full h-64 p-6 bg-slate-50 rounded-2xl mb-6 font-bold text-left" placeholder="Задача [ТЕКСТ] Ответ [ЭТАЛОН]..." /><button onClick={handleSaveTasks} className="w-full bg-blue-600 text-white py-6 rounded-2xl font-black uppercase">Загрузить</button></div></div>;
