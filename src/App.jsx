@@ -15,7 +15,9 @@ import {
   getAuth, signInAnonymously, onAuthStateChanged 
 } from 'firebase/auth';
 
-// --- КОНФИГУРАЦИЯ FIREBASE ---
+// =========================================================
+// ШАГ 1: КОНФИГУРАЦИЯ FIREBASE
+// =========================================================
 const firebaseConfig = {
   apiKey: "AIzaSyCgoD4vZCEU2W_w3TzE3102JcnlXnocmMg",
   authDomain: "surgery-app-89c4c.firebaseapp.com",
@@ -26,6 +28,7 @@ const firebaseConfig = {
   measurementId: "G-1P2WMCMEMC"
 };
 
+// --- Инициализация Firebase ---
 const isFirebaseReady = firebaseConfig && firebaseConfig.apiKey !== "";
 let app, auth, db;
 if (isFirebaseReady) {
@@ -47,16 +50,21 @@ const App = () => {
   const [studentName, setStudentName] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [toastMessage, setToastMessage] = useState(null);
+
+  // Исправлено: используем debugLog везде для согласованности
   const [debugLog, setDebugLog] = useState(""); 
 
   const [sessionGeminiKey, setSessionGeminiKey] = useState("");
 
   useEffect(() => {
     try {
-      if (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_GEMINI_KEY) {
-        setSessionGeminiKey(import.meta.env.VITE_GEMINI_KEY);
-      }
-    } catch (e) {}
+      // Безопасная проверка, чтобы не ломать сборку если import.meta не определен
+      const metaEnv = typeof import.meta !== 'undefined' ? import.meta.env : null;
+      const envKey = metaEnv?.VITE_GEMINI_KEY;
+      if (envKey) setSessionGeminiKey(envKey);
+    } catch (e) {
+      console.log("Check for environment variables skipped");
+    }
   }, []);
 
   const [materials, setMaterials] = useState([]); 
@@ -91,6 +99,7 @@ const App = () => {
     if (!user || !db) return;
     const mRef = collection(db, 'artifacts', PORTAL_ID, 'public', 'data', 'materials');
     const tRef = collection(db, 'artifacts', PORTAL_ID, 'public', 'data', 'task_sections');
+    
     const unsubM = onSnapshot(mRef, (s) => setMaterials(s.docs.map(d => ({ id: d.id, ...d.data() }))));
     const unsubT = onSnapshot(tRef, (s) => setTaskSections(s.docs.map(d => ({ id: d.id, ...d.data() }))));
     return () => { unsubM(); unsubT(); };
@@ -170,8 +179,9 @@ const App = () => {
       if (!res.ok) {
         // Показываем ПОЛНЫЙ текст ошибки, чтобы понять причину
         const errorDetails = JSON.stringify(data.error, null, 2);
+        const errorMsg = data.error?.message || "Ошибка API";
         setDebugLog(`API ERROR (${res.status}): ${errorDetails}`);
-        throw new Error(data.error?.message || "Ошибка API");
+        throw new Error(errorMsg);
       }
 
       let rawContent = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
@@ -196,7 +206,8 @@ const App = () => {
       setInputText(''); setInputTitle('');
     } catch (e) { 
       console.error(e);
-      if (!debugLog) setDebugLog(e.message); 
+      // Убедимся, что ошибка выводится в лог
+      setDebugLog(prev => prev || e.message); 
       showToast("ОШИБКА (См. красный лог)");
     } finally { setIsLoading(false); }
   };
@@ -245,8 +256,9 @@ const App = () => {
           </div>
         </div>
       );
+
       case 'menu': return (
-        <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center p-4 gap-12 text-center">
+        <div className="min-h-screen w-full bg-slate-950 flex flex-col items-center justify-center p-4 gap-12 text-center">
           <h2 className="text-white text-4xl font-black uppercase tracking-tighter text-center">Меню</h2>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-8 w-full max-w-4xl text-center">
             <button onClick={() => setView('student-select-test')} className="bg-white p-12 rounded-[3.5rem] shadow-2xl border-4 border-transparent hover:border-emerald-500 transition-all group flex flex-col items-center">
@@ -261,8 +273,9 @@ const App = () => {
           <button onClick={() => setView('welcome')} className="text-slate-500 hover:text-white uppercase font-black text-xs tracking-[0.3em] flex items-center gap-2 transition-colors"><ArrowLeft className="w-4 h-4"/> Выход</button>
         </div>
       );
+
       case 'admin-login': return (
-        <div className="min-h-screen bg-slate-950 flex items-center justify-center p-4">
+        <div className="min-h-screen w-full bg-slate-950 flex items-center justify-center p-4">
           <div className="max-w-md w-full bg-white rounded-[3rem] p-12 shadow-2xl flex flex-col items-center text-center">
             <ShieldCheck className="w-16 h-16 text-slate-900 mx-auto mb-10 text-center" />
             <input type="password" value={adminPassword} onChange={(e) => setAdminPassword(e.target.value)} placeholder="••••" className="w-full p-6 bg-slate-50 border-2 border-slate-100 rounded-2xl outline-none focus:border-slate-900 font-black text-center text-slate-900 tracking-[1em] text-3xl mb-10 shadow-inner text-center" />
@@ -270,6 +283,7 @@ const App = () => {
           </div>
         </div>
       );
+
       case 'admin': return (
         <div className="min-h-screen w-full bg-slate-50 p-6 md:p-12 text-left flex flex-col items-center">
           <div className="max-w-7xl w-full">
@@ -286,12 +300,19 @@ const App = () => {
             <div className="bg-emerald-950 p-8 rounded-[3rem] mb-12 shadow-2xl flex flex-col md:flex-row items-center gap-6 border-4 border-emerald-500/20 text-center">
                 <div className="bg-emerald-500 p-4 rounded-2xl"><Key className="text-white w-8 h-8" /></div>
                 <div className="flex-1 text-left">
-                    <h3 className="text-white font-black uppercase text-sm mb-1 text-left">Ключ Gemini API</h3>
+                    <h3 className="text-white font-black uppercase text-sm mb-1 text-left">Ключ Gemini API (Для ИИ)</h3>
                     <p className="text-emerald-400 text-[10px] font-bold uppercase tracking-widest text-left">Введите ваш рабочий ключ здесь.</p>
                 </div>
-                <input type="password" value={sessionGeminiKey} onChange={(e) => setSessionGeminiKey(e.target.value)} placeholder="AIzaSy..." className="flex-1 p-5 bg-white/10 border-2 border-white/10 rounded-2xl text-white font-mono text-sm outline-none focus:border-emerald-500" />
+                <input 
+                    type="password" 
+                    value={sessionGeminiKey} 
+                    onChange={(e) => setSessionGeminiKey(e.target.value)}
+                    placeholder="AIzaSy..." 
+                    className="flex-1 p-5 bg-white/10 border-2 border-white/10 rounded-2xl text-white font-mono text-sm outline-none focus:border-emerald-500"
+                />
             </div>
 
+            {/* БЛОК ДИАГНОСТИКИ */}
             {debugLog && (
                 <div className="bg-red-950 p-6 rounded-2xl mb-10 border-2 border-red-500 text-left text-red-200 font-mono text-xs overflow-auto max-w-4xl mx-auto">
                     <div className="font-bold mb-2">ПОСЛЕДНЯЯ ОШИБКА:</div>
@@ -322,6 +343,7 @@ const App = () => {
           </div>
         </div>
       );
+      
       case 'setup-test': return (
         <div className="min-h-screen bg-slate-900 flex items-center justify-center p-4">
             <div className="max-w-5xl w-full bg-white rounded-[4rem] p-12 sm:p-20 shadow-2xl relative text-center flex flex-col items-center">
@@ -339,6 +361,8 @@ const App = () => {
             </div>
         </div>
       );
+
+      // (Остальные экраны: admin-materials, admin-tasks-list, setup-tasks, student-select-test, student-select-tasks, quiz, result - добавлены в код для полноты)
       case 'admin-materials': return <div className="p-10 bg-slate-50 min-h-screen text-center flex flex-col items-center"><button onClick={() => setView('admin')} className="mb-10 text-slate-400 font-black uppercase text-xs flex items-center gap-2 self-start"><ArrowLeft className="w-4 h-4" /> Назад</button><div className="grid gap-4 max-w-4xl w-full">{materials.map(m => <div key={m.id} className="bg-white p-6 rounded-2xl shadow flex justify-between items-center text-left"><h4 className="font-black text-slate-900 uppercase text-left">{m.title}</h4><div className="flex gap-4"><button onClick={() => updateDoc(doc(db, 'artifacts', PORTAL_ID, 'public', 'data', 'materials', m.id), {isVisible: !m.isVisible})} className={`p-4 rounded-xl ${m.isVisible ? 'bg-emerald-500 text-white' : 'bg-slate-100 text-slate-400'}`}>{m.isVisible ? <Unlock className="w-5 h-5"/> : <Lock className="w-5 h-5"/>}</button><button onClick={() => deleteDoc(doc(db, 'artifacts', PORTAL_ID, 'public', 'data', 'materials', m.id))} className="p-4 bg-red-50 text-red-500 rounded-xl"><Trash2 className="w-5 h-5"/></button></div></div>)}</div></div>;
       case 'admin-tasks-list': return <div className="p-10 bg-slate-50 min-h-screen text-center flex flex-col items-center"><button onClick={() => setView('admin')} className="mb-10 text-slate-400 font-black uppercase text-xs flex items-center gap-2 self-start"><ArrowLeft className="w-4 h-4" /> Назад</button><button onClick={() => setView('setup-tasks')} className="mb-6 w-full max-w-4xl bg-slate-900 text-white py-6 rounded-2xl font-black uppercase text-xs">Добавить задачи</button><div className="grid gap-4 max-w-4xl w-full">{taskSections.map(s => <div key={s.id} className="bg-white p-6 rounded-2xl shadow flex justify-between items-center text-left"><h4 className="font-black text-slate-900 uppercase text-left">{s.title}</h4><div className="flex gap-4"><button onClick={() => updateDoc(doc(db, 'artifacts', PORTAL_ID, 'public', 'data', 'task_sections', s.id), {isVisible: !s.isVisible})} className={`p-4 rounded-xl ${s.isVisible ? 'bg-blue-500 text-white' : 'bg-slate-100 text-slate-400'}`}>{s.isVisible ? <Unlock className="w-5 h-5"/> : <Lock className="w-5 h-5"/>}</button><button onClick={() => deleteDoc(doc(db, 'artifacts', PORTAL_ID, 'public', 'data', 'task_sections', s.id))} className="p-4 bg-red-50 text-red-500 rounded-xl"><Trash2 className="w-5 h-5"/></button></div></div>)}</div></div>;
       case 'setup-tasks': return <div className="min-h-screen bg-slate-950 flex items-center justify-center p-4"><div className="max-w-4xl w-full bg-white p-10 rounded-[3rem] text-center flex flex-col items-center"><button onClick={() => setView('admin-tasks-list')} className="mb-8 text-slate-400 font-black uppercase text-xs flex items-center gap-2 self-start"><ArrowLeft className="w-4 h-4" /> Назад</button><h2 className="text-3xl font-black uppercase mb-6">Новые задачи</h2><input value={inputTitle} onChange={e => setInputTitle(e.target.value)} className="w-full p-6 bg-slate-50 rounded-2xl mb-4 font-bold text-center" placeholder="Название темы" /><textarea value={inputText} onChange={e => setInputText(e.target.value)} className="w-full h-64 p-6 bg-slate-50 rounded-2xl mb-6 font-bold text-left" placeholder="Задача [ТЕКСТ] Ответ [ЭТАЛОН]..." /><button onClick={handleSaveTasks} className="w-full bg-blue-600 text-white py-6 rounded-2xl font-black uppercase">Загрузить</button></div></div>;
@@ -359,17 +383,17 @@ const App = () => {
   };
 
   return (
-    <div className="font-sans antialiased text-left w-full min-h-screen flex flex-col selection:bg-emerald-100 bg-slate-950 items-center justify-center text-left">
+    <div className="font-sans antialiased text-left w-full min-h-screen flex flex-col selection:bg-emerald-100 selection:text-emerald-900 bg-slate-950 items-center justify-center text-left">
       {renderCurrentView()}
       {toastMessage && (
         <div className="fixed bottom-10 left-1/2 -translate-x-1/2 bg-slate-900 text-white px-12 py-6 rounded-[2.5rem] font-black shadow-2xl z-[100] border-2 border-slate-700 uppercase text-xs animate-in fade-in slide-in-from-bottom-4 text-center text-center text-center">
           {toastMessage}
         </div>
       )}
-      {debugError && (
+      {debugLog && (
           <div className="fixed top-10 left-1/2 -translate-x-1/2 bg-red-900 text-white px-10 py-5 rounded-2xl shadow-2xl z-[110] border-2 border-red-500 font-mono text-xs max-w-lg">
-              <div className="font-bold mb-2">ОШИБКА API:</div>
-              {debugError}
+              <div className="font-bold mb-2">ОШИБКА ИИ:</div>
+              {debugLog}
           </div>
       )}
     </div>
