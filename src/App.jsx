@@ -4,7 +4,7 @@ import {
   Loader2, FileText, Eye, ShieldCheck, GraduationCap, ClipboardList, 
   Stethoscope, Clock, AlertCircle, FileSearch, Timer, Plus, 
   RefreshCw, Trash2, BookOpen, Lock, Unlock, EyeOff, ArrowLeft, ArrowRight,
-  Trophy, Settings, Key, Zap
+  Trophy, Settings, Key, AlertTriangle
 } from 'lucide-react';
 import { initializeApp, getApps } from 'firebase/app';
 import { 
@@ -47,9 +47,7 @@ const App = () => {
   const [studentName, setStudentName] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [toastMessage, setToastMessage] = useState(null);
-  
-  // Лог для отладки на экране
-  const [debugLog, setDebugLog] = useState("");
+  const [debugLog, setDebugLog] = useState(""); 
 
   const [sessionGeminiKey, setSessionGeminiKey] = useState("");
 
@@ -134,86 +132,57 @@ const App = () => {
     return `${min}:${sec < 10 ? '0' + sec : sec}`;
   };
 
-  // --- УМНАЯ ФУНКЦИЯ ГЕНЕРАЦИИ (ПЕРЕБОР ВАРИАНТОВ) ---
+  // --- ЛОГИКА ГЕНЕРАЦИИ (ПРЯМОЙ ЗАПРОС) ---
   const handleGenerateTest = async (existing = null) => {
     setDebugLog(""); 
     const text = existing ? existing.content : inputText;
     const title = existing ? existing.title : inputTitle;
     
-    if (!text.trim() || !title.trim()) return showToast("Заполните название и текст материала!");
-    if (!sessionGeminiKey) return showToast("Сначала введите API Ключ!");
+    if (!text.trim() || !title.trim()) return showToast("Заполните поля!");
+    if (!sessionGeminiKey) return showToast("ВВЕДИТЕ КЛЮЧ В ЗЕЛЕНОЕ ПОЛЕ!");
 
     setIsLoading(true);
-    
-    // МЫ ПРОБУЕМ РАЗНЫЕ МОДЕЛИ И ВЕРСИИ ПО ОЧЕРЕДИ
-    // 1. Flash на v1beta (самая быстрая)
-    // 2. Pro на v1 (самая стабильная, работает всегда)
-    const endpoints = [
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${sessionGeminiKey}`,
-      `https://generativelanguage.googleapis.com/v1/models/gemini-pro:generateContent?key=${sessionGeminiKey}`
-    ];
 
-    const safeText = text.substring(0, 45000); 
-    
-    // Промпт без технических настроек, только текст
+    // Используем ТОЛЬКО одну, самую вероятную модель
+    // v1beta - это важно для бесплатных ключей
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${sessionGeminiKey}`;
+
     const prompt = `
-      Act as a medical professor. Analyze the text below and create exactly 30 multiple-choice questions (MCQs) in Russian.
+      You are a medical professor. 
+      Generate exactly 30 multiple-choice questions in Russian based on the text.
       
-      STRICT RULES:
-      1. Output MUST be a valid raw JSON array.
-      2. Do NOT use markdown code blocks (no \`\`\`json).
-      3. No intro, no outro. Just the array.
-      4. Structure: [{"text": "Question?", "options": ["A", "B", "C", "D"], "correctIndex": 0}]
+      STRICT JSON FORMAT ONLY. No markdown.
+      [{"text": "Question?", "options": ["A", "B", "C", "D"], "correctIndex": 0}]
 
       TEXT:
-      ${safeText}
+      ${text.substring(0, 45000)}
     `;
 
     try {
-      let successData = null;
-      let lastError = "";
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
+      });
 
-      // Цикл перебора моделей
-      for (const url of endpoints) {
-        try {
-          console.log("Trying:", url);
-          const res = await fetch(url, {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({ 
-              contents: [{ parts: [{ text: prompt }] }]
-              // generationConfig УДАЛЕН ПОЛНОСТЬЮ - это решит проблему INVALID PAYLOAD
-            })
-          });
-
-          const data = await res.json();
-          
-          if (!res.ok) {
-            const msg = data.error?.message || res.statusText;
-            console.warn(`Failed ${url}: ${msg}`);
-            lastError = msg;
-            continue; // Пробуем следующую
-          }
-
-          successData = data;
-          break; // Успех!
-        } catch (e) {
-           lastError = e.message;
-        }
-      }
-
-      if (!successData) {
-        setDebugLog(`Все попытки неудачны. Последняя ошибка: ${lastError}`);
-        throw new Error("Не удалось связаться с ИИ. Проверьте ключ.");
-      }
-
-      let rawContent = successData.candidates?.[0]?.content?.parts?.[0]?.text || "";
+      const data = await res.json();
       
-      // Парсинг JSON вручную
+      if (!res.ok) {
+        // Показываем ПОЛНЫЙ текст ошибки, чтобы понять причину
+        const errorDetails = JSON.stringify(data.error, null, 2);
+        setDebugLog(`API ERROR (${res.status}): ${errorDetails}`);
+        throw new Error(data.error?.message || "Ошибка API");
+      }
+
+      let rawContent = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
+      
       const start = rawContent.indexOf('[');
       const end = rawContent.lastIndexOf(']') + 1;
       
-      if (start === -1 || end <= 0) throw new Error("ИИ ответил не в формате JSON. Попробуйте снова.");
+      if (start === -1 || end <= 0) {
+          setDebugLog("Ответ ИИ не содержит JSON: " + rawContent.substring(0, 100));
+          throw new Error("Неверный формат ответа");
+      }
       
       const cleanJson = rawContent.substring(start, end);
       const questions = JSON.parse(cleanJson);
@@ -222,13 +191,13 @@ const App = () => {
         title, content: text, questions, updatedAt: Date.now(), isVisible: existing?.isVisible ?? false 
       });
       
-      showToast("Тест успешно создан!");
+      showToast("Тест создан!");
       setView('admin-materials');
       setInputText(''); setInputTitle('');
     } catch (e) { 
       console.error(e);
-      showToast("Ошибка! См. лог на экране.");
-      if (!debugLog) setDebugLog(e.message);
+      if (!debugLog) setDebugLog(e.message); 
+      showToast("ОШИБКА (См. красный лог)");
     } finally { setIsLoading(false); }
   };
 
@@ -263,7 +232,7 @@ const App = () => {
 
     switch (view) {
       case 'welcome': return (
-        <div className="min-h-screen w-full bg-slate-950 flex items-center justify-center p-4">
+        <div className="min-h-screen bg-slate-950 flex items-center justify-center p-4">
           <div className="max-w-md w-full bg-white rounded-[3rem] p-10 shadow-2xl text-center flex flex-col items-center">
             <div className="bg-emerald-500 w-16 h-16 rounded-2xl mb-6 flex items-center justify-center shadow-xl"><GraduationCap className="text-white w-10 h-10" /></div>
             <h1 className="text-3xl font-black text-slate-900 mb-2 uppercase tracking-tight">Госпитальная хирургия</h1>
@@ -276,9 +245,8 @@ const App = () => {
           </div>
         </div>
       );
-
       case 'menu': return (
-        <div className="min-h-screen w-full bg-slate-950 flex flex-col items-center justify-center p-4 gap-12 text-center">
+        <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center p-4 gap-12 text-center">
           <h2 className="text-white text-4xl font-black uppercase tracking-tighter text-center">Меню</h2>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-8 w-full max-w-4xl text-center">
             <button onClick={() => setView('student-select-test')} className="bg-white p-12 rounded-[3.5rem] shadow-2xl border-4 border-transparent hover:border-emerald-500 transition-all group flex flex-col items-center">
@@ -293,9 +261,8 @@ const App = () => {
           <button onClick={() => setView('welcome')} className="text-slate-500 hover:text-white uppercase font-black text-xs tracking-[0.3em] flex items-center gap-2 transition-colors"><ArrowLeft className="w-4 h-4"/> Выход</button>
         </div>
       );
-
       case 'admin-login': return (
-        <div className="min-h-screen w-full bg-slate-950 flex items-center justify-center p-4">
+        <div className="min-h-screen bg-slate-950 flex items-center justify-center p-4">
           <div className="max-w-md w-full bg-white rounded-[3rem] p-12 shadow-2xl flex flex-col items-center text-center">
             <ShieldCheck className="w-16 h-16 text-slate-900 mx-auto mb-10 text-center" />
             <input type="password" value={adminPassword} onChange={(e) => setAdminPassword(e.target.value)} placeholder="••••" className="w-full p-6 bg-slate-50 border-2 border-slate-100 rounded-2xl outline-none focus:border-slate-900 font-black text-center text-slate-900 tracking-[1em] text-3xl mb-10 shadow-inner text-center" />
@@ -303,7 +270,6 @@ const App = () => {
           </div>
         </div>
       );
-
       case 'admin': return (
         <div className="min-h-screen w-full bg-slate-50 p-6 md:p-12 text-left flex flex-col items-center">
           <div className="max-w-7xl w-full">
@@ -323,18 +289,11 @@ const App = () => {
                     <h3 className="text-white font-black uppercase text-sm mb-1 text-left">Ключ Gemini API</h3>
                     <p className="text-emerald-400 text-[10px] font-bold uppercase tracking-widest text-left">Введите ваш рабочий ключ здесь.</p>
                 </div>
-                <input 
-                    type="password" 
-                    value={sessionGeminiKey} 
-                    onChange={(e) => setSessionGeminiKey(e.target.value)}
-                    placeholder="AIzaSy..." 
-                    className="flex-1 p-5 bg-white/10 border-2 border-white/10 rounded-2xl text-white font-mono text-sm outline-none focus:border-emerald-500"
-                />
+                <input type="password" value={sessionGeminiKey} onChange={(e) => setSessionGeminiKey(e.target.value)} placeholder="AIzaSy..." className="flex-1 p-5 bg-white/10 border-2 border-white/10 rounded-2xl text-white font-mono text-sm outline-none focus:border-emerald-500" />
             </div>
 
-            {/* ДИАГНОСТИКА */}
             {debugLog && (
-                <div className="w-full bg-red-900/90 text-white p-6 rounded-2xl mb-8 border-2 border-red-500 font-mono text-xs overflow-auto max-h-40 text-left">
+                <div className="bg-red-950 p-6 rounded-2xl mb-10 border-2 border-red-500 text-left text-red-200 font-mono text-xs overflow-auto max-w-4xl mx-auto">
                     <div className="font-bold mb-2">ПОСЛЕДНЯЯ ОШИБКА:</div>
                     {debugLog}
                 </div>
@@ -363,7 +322,6 @@ const App = () => {
           </div>
         </div>
       );
-      
       case 'setup-test': return (
         <div className="min-h-screen bg-slate-900 flex items-center justify-center p-4">
             <div className="max-w-5xl w-full bg-white rounded-[4rem] p-12 sm:p-20 shadow-2xl relative text-center flex flex-col items-center">
@@ -401,12 +359,18 @@ const App = () => {
   };
 
   return (
-    <div className="font-sans antialiased text-left w-full min-h-screen flex flex-col selection:bg-emerald-100 selection:text-emerald-900 bg-slate-950 items-center justify-center text-left">
+    <div className="font-sans antialiased text-left w-full min-h-screen flex flex-col selection:bg-emerald-100 bg-slate-950 items-center justify-center text-left">
       {renderCurrentView()}
       {toastMessage && (
         <div className="fixed bottom-10 left-1/2 -translate-x-1/2 bg-slate-900 text-white px-12 py-6 rounded-[2.5rem] font-black shadow-2xl z-[100] border-2 border-slate-700 uppercase text-xs animate-in fade-in slide-in-from-bottom-4 text-center text-center text-center">
           {toastMessage}
         </div>
+      )}
+      {debugError && (
+          <div className="fixed top-10 left-1/2 -translate-x-1/2 bg-red-900 text-white px-10 py-5 rounded-2xl shadow-2xl z-[110] border-2 border-red-500 font-mono text-xs max-w-lg">
+              <div className="font-bold mb-2">ОШИБКА API:</div>
+              {debugError}
+          </div>
       )}
     </div>
   );
