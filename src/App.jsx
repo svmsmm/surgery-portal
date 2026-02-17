@@ -15,7 +15,7 @@ import {
   getAuth, signInAnonymously, onAuthStateChanged 
 } from 'firebase/auth';
 
-// --- FIREBASE ---
+// --- КОНФИГУРАЦИЯ FIREBASE ---
 const firebaseConfig = {
   apiKey: "AIzaSyCgoD4vZCEU2W_w3TzE3102JcnlXnocmMg",
   authDomain: "surgery-app-89c4c.firebaseapp.com",
@@ -122,7 +122,7 @@ const App = () => {
     return `${min}:${sec < 10 ? '0' + sec : sec}`;
   };
 
-  // --- ЛОГИКА ГЕНЕРАЦИИ ЧЕРЕЗ СЕРВЕР (Server-Side Proxy) ---
+  // --- НОВАЯ ЛОГИКА: ЗАПРОС К ВАШЕМУ СЕРВЕРУ (Vercel) ---
   const handleGenerateTest = async (existing = null) => {
     setDebugLog(""); 
     const text = existing ? existing.content : inputText;
@@ -133,44 +133,39 @@ const App = () => {
     setIsLoading(true);
 
     try {
-      // Подготовка промпта
-      const prompt = `
-        You are a medical professor. 
-        Generate exactly 30 multiple-choice questions in Russian based on the text.
-        
-        CRITICAL OUTPUT RULES:
-        1. Return ONLY a valid JSON array.
-        2. No markdown formatting (no \`\`\`json).
-        3. No intro or outro text.
-        4. Array structure: [{"text": "Question", "options": ["A", "B", "C", "D"], "correctIndex": 0}]
-
-        TEXT:
-        ${text.substring(0, 40000)}
-      `;
-
-      // Отправляем запрос на НАШ сервер
+      // 1. Отправляем текст на НАШ сервер (/api/generate)
+      // Ключ API здесь НЕ НУЖЕН, он надежно спрятан на сервере
       const res = await fetch('/api/generate', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({ prompt })
+        body: JSON.stringify({ 
+            prompt: text.substring(0, 35000) 
+        })
       });
 
-      // Проверка на ошибку 404 (если файл api/generate.js не найден)
+      // 2. Проверяем, не вернул ли сервер HTML (ошибка 404/500)
       const contentType = res.headers.get("content-type");
       if (!contentType || !contentType.includes("application/json")) {
-          setDebugLog("ОШИБКА 404: Серверная функция не найдена. Убедитесь, что папка 'api' лежит в корне проекта.");
-          throw new Error("Server function missing");
+          const textResp = await res.text();
+          console.error("Non-JSON response:", textResp);
+          setDebugLog(`ОШИБКА СЕРВЕРА: Файл api/generate.js не найден или вернул HTML. Проверьте структуру папок.`);
+          throw new Error("Server endpoint problem");
       }
 
       const data = await res.json();
       
       if (!res.ok) {
+        // Если сервер вернул 503 (Cold Start), просим подождать
+        if (res.status === 503) {
+            setDebugLog("Модель запускается... Подождите 30 сек и нажмите снова.");
+            throw new Error("Модель загружается...");
+        }
         setDebugLog(`SERVER ERROR: ${data.error}`);
         throw new Error(data.error);
       }
 
       if (!data.questions || !Array.isArray(data.questions)) {
-          throw new Error("Сервер не вернул вопросы.");
+          throw new Error("Сервер не вернул список вопросов.");
       }
       
       await setDoc(doc(db, 'artifacts', PORTAL_ID, 'public', 'data', 'materials', existing?.id || crypto.randomUUID()), { 
@@ -272,12 +267,11 @@ const App = () => {
               </div>
             </div>
             
-            {/* ИНФО О СЕРВЕРЕ */}
             <div className="bg-blue-900 p-8 rounded-[3rem] mb-12 shadow-2xl flex flex-col md:flex-row items-center gap-6 border-4 border-blue-500/20 text-center">
                 <div className="bg-blue-500 p-4 rounded-2xl"><Server className="text-white w-8 h-8" /></div>
                 <div className="flex-1 text-left">
-                    <h3 className="text-white font-black uppercase text-sm mb-1 text-left">Режим Сервера (США)</h3>
-                    <p className="text-blue-200 text-[10px] font-bold uppercase tracking-widest text-left">Запросы к ИИ идут через прокси Vercel. Ключ на клиенте не нужен.</p>
+                    <h3 className="text-white font-black uppercase text-sm mb-1 text-left">Режим Сервера (Proxy Vercel)</h3>
+                    <p className="text-blue-200 text-[10px] font-bold uppercase tracking-widest text-left">Запросы идут через США. Блокировок РБ нет.</p>
                 </div>
             </div>
 
@@ -324,11 +318,12 @@ const App = () => {
                 </div>
                 <button disabled={isLoading || !inputText || !inputTitle} onClick={() => handleGenerateTest()} className="w-full mt-10 bg-emerald-600 hover:bg-emerald-500 text-white font-black py-8 rounded-[2.5rem] shadow-2xl active:scale-95 transition-all uppercase tracking-[0.2em] shadow-emerald-500/20 text-xl flex items-center justify-center gap-6 text-center">
                   {isLoading ? <Loader2 className="animate-spin w-8 h-8 text-center"/> : <RefreshCw className="w-8 h-8 text-center"/>} 
-                  {isLoading ? "ГЕНЕРАЦИЯ (Server)..." : "СФОРМИРОВАТЬ ТЕСТ"}
+                  {isLoading ? "ГЕНЕРАЦИЯ (Qwen AI)..." : "СФОРМИРОВАТЬ ТЕСТ"}
                 </button>
             </div>
         </div>
       );
+      // ... (Остальные экраны: admin-materials, admin-tasks-list, setup-tasks, student-select-test, student-select-tasks, quiz, result - добавлены в код для полноты)
       case 'admin-materials': return <div className="p-10 bg-slate-50 min-h-screen text-center flex flex-col items-center"><button onClick={() => setView('admin')} className="mb-10 text-slate-400 font-black uppercase text-xs flex items-center gap-2 self-start"><ArrowLeft className="w-4 h-4" /> Назад</button><div className="grid gap-4 max-w-4xl w-full">{materials.map(m => <div key={m.id} className="bg-white p-6 rounded-2xl shadow flex justify-between items-center text-left"><h4 className="font-black text-slate-900 uppercase text-left">{m.title}</h4><div className="flex gap-4"><button onClick={() => updateDoc(doc(db, 'artifacts', PORTAL_ID, 'public', 'data', 'materials', m.id), {isVisible: !m.isVisible})} className={`p-4 rounded-xl ${m.isVisible ? 'bg-emerald-500 text-white' : 'bg-slate-100 text-slate-400'}`}>{m.isVisible ? <Unlock className="w-5 h-5"/> : <Lock className="w-5 h-5"/>}</button><button onClick={() => deleteDoc(doc(db, 'artifacts', PORTAL_ID, 'public', 'data', 'materials', m.id))} className="p-4 bg-red-50 text-red-500 rounded-xl"><Trash2 className="w-5 h-5"/></button></div></div>)}</div></div>;
       case 'admin-tasks-list': return <div className="p-10 bg-slate-50 min-h-screen text-center flex flex-col items-center"><button onClick={() => setView('admin')} className="mb-10 text-slate-400 font-black uppercase text-xs flex items-center gap-2 self-start"><ArrowLeft className="w-4 h-4" /> Назад</button><button onClick={() => setView('setup-tasks')} className="mb-6 w-full max-w-4xl bg-slate-900 text-white py-6 rounded-2xl font-black uppercase text-xs">Добавить задачи</button><div className="grid gap-4 max-w-4xl w-full">{taskSections.map(s => <div key={s.id} className="bg-white p-6 rounded-2xl shadow flex justify-between items-center text-left"><h4 className="font-black text-slate-900 uppercase text-left">{s.title}</h4><div className="flex gap-4"><button onClick={() => updateDoc(doc(db, 'artifacts', PORTAL_ID, 'public', 'data', 'task_sections', s.id), {isVisible: !s.isVisible})} className={`p-4 rounded-xl ${s.isVisible ? 'bg-blue-500 text-white' : 'bg-slate-100 text-slate-400'}`}>{s.isVisible ? <Unlock className="w-5 h-5"/> : <Lock className="w-5 h-5"/>}</button><button onClick={() => deleteDoc(doc(db, 'artifacts', PORTAL_ID, 'public', 'data', 'task_sections', s.id))} className="p-4 bg-red-50 text-red-500 rounded-xl"><Trash2 className="w-5 h-5"/></button></div></div>)}</div></div>;
       case 'setup-tasks': return <div className="min-h-screen bg-slate-950 flex items-center justify-center p-4"><div className="max-w-4xl w-full bg-white p-10 rounded-[3rem] text-center flex flex-col items-center"><button onClick={() => setView('admin-tasks-list')} className="mb-8 text-slate-400 font-black uppercase text-xs flex items-center gap-2 self-start"><ArrowLeft className="w-4 h-4" /> Назад</button><h2 className="text-3xl font-black uppercase mb-6">Новые задачи</h2><input value={inputTitle} onChange={e => setInputTitle(e.target.value)} className="w-full p-6 bg-slate-50 rounded-2xl mb-4 font-bold text-center" placeholder="Название темы" /><textarea value={inputText} onChange={e => setInputText(e.target.value)} className="w-full h-64 p-6 bg-slate-50 rounded-2xl mb-6 font-bold text-left" placeholder="Задача [ТЕКСТ] Ответ [ЭТАЛОН]..." /><button onClick={handleSaveTasks} className="w-full bg-blue-600 text-white py-6 rounded-2xl font-black uppercase">Загрузить</button></div></div>;
@@ -355,12 +350,6 @@ const App = () => {
         <div className="fixed bottom-10 left-1/2 -translate-x-1/2 bg-slate-900 text-white px-12 py-6 rounded-[2.5rem] font-black shadow-2xl z-[100] border-2 border-slate-700 uppercase text-xs animate-in fade-in slide-in-from-bottom-4 text-center text-center text-center">
           {toastMessage}
         </div>
-      )}
-      {debugLog && (
-          <div className="fixed top-10 left-1/2 -translate-x-1/2 bg-red-900 text-white px-10 py-5 rounded-2xl shadow-2xl z-[110] border-2 border-red-500 font-mono text-xs max-w-lg">
-              <div className="font-bold mb-2">ОТЛАДКА:</div>
-              {debugLog}
-          </div>
       )}
     </div>
   );
