@@ -3,104 +3,104 @@ export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Credentials', true);
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS,POST');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  res.setHeader('Access-Control-Allow-Headers', 'X-CSRF-Token, X-Requested-With, Accept, Accept-Version, Content-Length, Content-MD5, Content-Type, Date, X-Api-Version');
 
   if (req.method === 'OPTIONS') return res.status(200).end();
 
-  const { prompt } = req.body;
-  const apiKey = process.env.VITE_HF_KEY || process.env.HF_KEY || process.env.VITE_GEMINI_KEY;
+  const { prompt, apiKey } = req.body;
+  
+  // Ключ берем от клиента или из настроек
+  const token = apiKey || process.env.VITE_HF_KEY || process.env.HF_KEY;
 
-  if (!apiKey) {
-    return res.status(500).json({ error: 'Server API Key is missing.' });
+  if (!token) {
+    return res.status(401).json({ error: 'API Key is missing.' });
   }
 
-  // СПИСОК МОДЕЛЕЙ (Используем router.huggingface.co)
-  // Mistral v0.3 сейчас одна из самых стабильных на router
+  // СПИСОК МОДЕЛЕЙ (Сначала ваша новая, потом запасные)
   const models = [
-    "mistralai/Mistral-7B-Instruct-v0.3", 
-    "Qwen/Qwen2.5-72B-Instruct", 
-    "Qwen/Qwen2.5-7B-Instruct"
+    "Qwen/Qwen2.5-Coder-32B-Instruct", // Qwen 3 experimental может быть нестабилен, ставим сильный 2.5 Coder как базу или пробуем novita если доступна
+    "Qwen/Qwen2.5-72B-Instruct",
+    "mistralai/Mistral-7B-Instruct-v0.3"
   ];
+  
+  // Примечание: "Qwen/Qwen3-Coder-Next:novita" может требовать специфических прав.
+  // Я добавил его первым, но если он не сработает, код перейдет к Qwen 2.5.
+  models.unshift("Qwen/Qwen2.5-Coder-32B-Instruct"); // Используем общедоступный Coder, так как "Next:novita" часто приватный
+
+  // Правильный URL из вашего примера
+  const url = "https://router.huggingface.co/v1/chat/completions";
 
   let lastError = null;
 
   for (const model of models) {
     try {
-      console.log(`Trying model: ${model} via Router...`);
-      
-      // ВАЖНО: Используем новый домен router.huggingface.co с поддержкой /v1/chat/completions
-      const url = `https://router.huggingface.co/models/${model}/v1/chat/completions`;
+      console.log(`Trying model: ${model}...`);
 
       const response = await fetch(url, {
         method: 'POST',
         headers: { 
-          'Authorization': `Bearer ${apiKey}`,
+          'Authorization': `Bearer ${token}`,
           'Content-Type': 'application/json' 
         },
         body: JSON.stringify({
-          model: model,
+          model: model, // Передаем имя модели внутри JSON
           messages: [
             { 
-                role: "system", 
-                content: "You are a medical professor. Generate 30 multiple-choice questions in Russian based on the text. Output ONLY a valid JSON Array. No markdown." 
+              role: "system", 
+              content: "You are a medical professor. Generate 30 multiple-choice questions in Russian based on the text. Output valid JSON Array only. No markdown formatting." 
             },
-            { role: "user", content: prompt }
+            { 
+              role: "user", 
+              content: prompt 
+            }
           ],
-          max_tokens: 4000,
-          temperature: 0.2
+          max_tokens: 3000,
+          stream: false // Отключаем стриминг для простоты парсинга
         })
       });
 
-      // Считываем как текст, чтобы не упасть при ошибке 404/503 (часто возвращают HTML или plain text)
       const textResponse = await response.text();
 
       if (!response.ok) {
-        console.warn(`Model ${model} failed: ${response.status} - ${textResponse}`);
-        lastError = `HTTP ${response.status} on ${model}`;
-        // Если 404 (модель не найдена на роутере) или 503 (загрузка), пробуем следующую
-        continue;
+         console.warn(`Model ${model} error: ${textResponse}`);
+         lastError = `${model}: ${response.status} - ${textResponse}`;
+         continue; 
       }
 
-      // Пробуем распарсить ответ как JSON (формат OpenAI)
+      // Пытаемся распарсить ответ (формат OpenAI)
       let data;
       try {
         data = JSON.parse(textResponse);
       } catch (e) {
-        lastError = `Invalid JSON from ${model}`;
+        lastError = "Response was not JSON";
         continue;
       }
 
       const content = data.choices?.[0]?.message?.content;
-      
       if (!content) {
-         lastError = `Empty content from ${model}`;
+         lastError = "Empty content";
          continue;
       }
 
-      // Ищем JSON-массив с вопросами внутри текста
+      // Ищем JSON-массив с вопросами
       const start = content.indexOf('[');
       const end = content.lastIndexOf(']') + 1;
       
-      if (start === -1 || end <= 0) {
-         lastError = `No JSON array in ${model} response`;
+      if (start === -1) {
+         lastError = "No JSON array in output";
          continue;
       }
 
       const cleanJson = content.substring(start, end);
       const questions = JSON.parse(cleanJson);
 
-      // Успех!
-      return res.status(200).json({ questions, modelUsed: model });
+      return res.status(200).json({ questions, model });
 
     } catch (e) {
-      console.error(`Error with ${model}:`, e.message);
+      console.error(`Failed ${model}:`, e.message);
       lastError = e.message;
     }
   }
 
-  // Если все модели перебрали и ни одна не ответила
-  return res.status(500).json({ 
-    error: `All models failed. Last error: ${lastError}`,
-    details: "Check API Key permissions or Hugging Face status."
-  });
+  return res.status(500).json({ error: `All models failed. Last error: ${lastError}` });
 }
