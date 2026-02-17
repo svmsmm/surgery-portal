@@ -45,9 +45,18 @@ const App = () => {
   const [user, setUser] = useState(null);
   const [studentName, setStudentName] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const [loadingStatus, setLoadingStatus] = useState(""); // Текст статуса загрузки
+  const [loadingStatus, setLoadingStatus] = useState("");
   const [toastMessage, setToastMessage] = useState(null);
   const [debugLog, setDebugLog] = useState(""); 
+
+  const [sessionGeminiKey, setSessionGeminiKey] = useState("");
+
+  useEffect(() => {
+    try {
+      const metaEnv = typeof import.meta !== 'undefined' ? import.meta.env : null;
+      if (metaEnv?.VITE_HF_KEY) setSessionGeminiKey(metaEnv.VITE_HF_KEY);
+    } catch (e) {}
+  }, []);
 
   const [materials, setMaterials] = useState([]); 
   const [taskSections, setTaskSections] = useState([]); 
@@ -62,6 +71,7 @@ const App = () => {
   const [activeTaskSection, setActiveTaskSection] = useState(null);
   const [currentTaskIndex, setCurrentTaskIndex] = useState(0);
   const [showAnswerLocally, setShowAnswerLocally] = useState(false);
+
   const [adminPassword, setAdminPassword] = useState('');
   const [isAdminAuthenticated, setIsAdminAuthenticated] = useState(false);
   const [inputTitle, setInputTitle] = useState('');
@@ -121,61 +131,62 @@ const App = () => {
     return `${min}:${sec < 10 ? '0' + sec : sec}`;
   };
 
-  // --- ЛОГИКА РАЗДЕЛЕНИЯ ТЕКСТА (CHUNKING) ---
+  // --- ГЕНЕРАЦИЯ (С ПЕРЕДАЧЕЙ КЛЮЧА) ---
   const handleGenerateTest = async (existing = null) => {
     setDebugLog(""); 
     const text = existing ? existing.content : inputText;
     const title = existing ? existing.title : inputTitle;
     
     if (!text.trim() || !title.trim()) return showToast("Заполните поля!");
+    if (!sessionGeminiKey) return showToast("Введите Ключ (hf_...)!");
 
     setIsLoading(true);
     let allQuestions = [];
 
     try {
-      // Разбиваем текст на блоки по 15000 символов (безопасный лимит)
-      const chunkSize = 15000;
+      // Разбиваем текст на блоки по 12000 символов (безопасный лимит для HF)
+      const chunkSize = 12000;
       const chunks = [];
       for (let i = 0; i < text.length; i += chunkSize) {
         chunks.push(text.substring(i, i + chunkSize));
       }
 
-      setLoadingStatus(`Найдено блоков: ${chunks.length}. Обработка...`);
+      setLoadingStatus(`Обработка ${chunks.length} блоков...`);
 
-      // Обрабатываем каждый блок последовательно
       for (let i = 0; i < chunks.length; i++) {
-        setLoadingStatus(`Обработка части ${i + 1} из ${chunks.length}...`);
+        setLoadingStatus(`Генерация: часть ${i + 1} из ${chunks.length}...`);
         
         const res = await fetch('/api/generate', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({ 
-                prompt: chunks[i] // Отправляем только кусочек
+                prompt: chunks[i],
+                apiKey: sessionGeminiKey // ПЕРЕДАЕМ КЛЮЧ НА СЕРВЕР!
             })
         });
 
         const data = await res.json();
         
-        if (res.ok && data.questions && Array.isArray(data.questions)) {
+        if (!res.ok) {
+            console.warn(`Chunk ${i+1} failed: ${data.error}`);
+            // Логируем ошибку, но пробуем следующий кусок
+            if (i === 0 && chunks.length === 1) throw new Error(data.error); 
+        } else if (data.questions && Array.isArray(data.questions)) {
             allQuestions = [...allQuestions, ...data.questions];
-        } else {
-            console.warn(`Chunk ${i+1} failed or returned no questions.`);
-            // Не прерываем, если один кусок не сработал, идем дальше
         }
       }
 
       if (allQuestions.length === 0) {
-          throw new Error("Не удалось сгенерировать вопросы ни из одного блока.");
+          throw new Error("Не удалось сгенерировать вопросы. Проверьте ключ HF.");
       }
 
-      // Обрезаем до 30 вопросов, если получилось больше, или оставляем сколько есть
-      const finalQuestions = allQuestions.slice(0, 50); // Берем до 50 вопросов
+      const finalQuestions = allQuestions.slice(0, 50); 
 
       await setDoc(doc(db, 'artifacts', PORTAL_ID, 'public', 'data', 'materials', existing?.id || crypto.randomUUID()), { 
         title, content: text, questions: finalQuestions, updatedAt: Date.now(), isVisible: existing?.isVisible ?? false 
       });
       
-      showToast(`Успешно! Создано вопросов: ${finalQuestions.length}`);
+      showToast(`Успех! Создано: ${finalQuestions.length} вопросов`);
       setView('admin-materials');
       setInputText(''); setInputTitle('');
     } catch (e) { 
@@ -273,14 +284,22 @@ const App = () => {
               </div>
             </div>
             
-            <div className="bg-blue-900 p-8 rounded-[3rem] mb-12 shadow-2xl flex flex-col md:flex-row items-center gap-6 border-4 border-blue-500/20 text-center">
-                <div className="bg-blue-500 p-4 rounded-2xl"><Server className="text-white w-8 h-8" /></div>
+            <div className="bg-emerald-950 p-8 rounded-[3rem] mb-12 shadow-2xl flex flex-col md:flex-row items-center gap-6 border-4 border-emerald-500/20 text-center">
+                <div className="bg-emerald-500 p-4 rounded-2xl"><Key className="text-white w-8 h-8" /></div>
                 <div className="flex-1 text-left">
-                    <h3 className="text-white font-black uppercase text-sm mb-1 text-left">Сервер обработки (США)</h3>
-                    <p className="text-blue-200 text-[10px] font-bold uppercase tracking-widest text-left">Режим больших текстов включен. Лимиты сняты.</p>
+                    <h3 className="text-white font-black uppercase text-sm mb-1 text-left">Ключ Hugging Face (hf_...)</h3>
+                    <p className="text-emerald-400 text-[10px] font-bold uppercase tracking-widest text-left">Введите ваш ключ HF для работы ИИ (Mistral/Qwen).</p>
                 </div>
+                <input 
+                    type="password" 
+                    value={sessionGeminiKey} 
+                    onChange={(e) => setSessionGeminiKey(e.target.value)}
+                    placeholder="hf_..." 
+                    className="flex-1 p-5 bg-white/10 border-2 border-white/10 rounded-2xl text-white font-mono text-sm outline-none focus:border-emerald-500"
+                />
             </div>
 
+            {/* БЛОК ДИАГНОСТИКИ */}
             {debugLog && (
                 <div className="bg-red-950 p-6 rounded-2xl mb-10 border-2 border-red-500 text-left text-red-200 font-mono text-xs overflow-auto max-w-4xl mx-auto whitespace-pre-wrap">
                     <div className="font-bold mb-2 flex items-center gap-2"><Bug className="w-4 h-4"/> ДИАГНОСТИКА:</div>
@@ -319,16 +338,16 @@ const App = () => {
                 <h2 className="text-4xl font-black text-slate-900 uppercase mb-2 tracking-tight text-center">Создание ИИ Теста</h2>
                 <div className="space-y-6 text-left w-full mt-10">
                     <input type="text" value={inputTitle} onChange={e => setInputTitle(e.target.value)} placeholder="Тема теста" className="w-full p-8 bg-slate-50 border-2 border-transparent rounded-3xl focus:bg-white focus:border-emerald-600 font-bold text-slate-900 text-center uppercase shadow-inner text-xl" />
-                    <textarea value={inputText} onChange={e => setInputText(e.target.value)} placeholder="Вставьте учебный материал (до 100 страниц)..." className="w-full h-[400px] p-10 bg-slate-50 border-2 border-transparent rounded-[3rem] focus:bg-white focus:border-emerald-600 outline-none resize-none font-bold text-slate-700 text-lg shadow-inner scrollbar-hide text-left" />
+                    <textarea value={inputText} onChange={e => setInputText(e.target.value)} placeholder="Вставьте учебный материал..." className="w-full h-[400px] p-10 bg-slate-50 border-2 border-transparent rounded-[3rem] focus:bg-white focus:border-emerald-600 outline-none resize-none font-bold text-slate-700 text-lg shadow-inner scrollbar-hide text-left" />
                 </div>
-                <button disabled={isLoading} onClick={() => handleGenerateTest()} className="w-full mt-10 bg-emerald-600 hover:bg-emerald-500 text-white font-black py-8 rounded-[2.5rem] shadow-2xl active:scale-95 transition-all uppercase tracking-[0.2em] shadow-emerald-500/20 text-xl flex items-center justify-center gap-6 text-center">
+                <button disabled={isLoading || !inputText || !inputTitle} onClick={() => handleGenerateTest()} className="w-full mt-10 bg-emerald-600 hover:bg-emerald-500 text-white font-black py-8 rounded-[2.5rem] shadow-2xl active:scale-95 transition-all uppercase tracking-[0.2em] shadow-emerald-500/20 text-xl flex items-center justify-center gap-6 text-center">
                   {isLoading ? <Loader2 className="animate-spin w-8 h-8 text-center"/> : <RefreshCw className="w-8 h-8 text-center"/>} 
-                  {isLoading ? loadingStatus || "Генерация..." : "СФОРМИРОВАТЬ ТЕСТ"}
+                  {isLoading ? loadingStatus || "ГЕНЕРАЦИЯ..." : "СФОРМИРОВАТЬ ТЕСТ"}
                 </button>
             </div>
         </div>
       );
-      // ... (Остальные экраны: admin-materials, admin-tasks-list, setup-tasks, student-select-test, student-select-tasks, quiz, result - добавлены в код для полноты)
+      // ... Остальные экраны (admin-materials, admin-tasks-list, setup-tasks, student-select-test, student-select-tasks, quiz, result - добавлены в код для полноты)
       case 'admin-materials': return <div className="p-10 bg-slate-50 min-h-screen text-center flex flex-col items-center"><button onClick={() => setView('admin')} className="mb-10 text-slate-400 font-black uppercase text-xs flex items-center gap-2 self-start"><ArrowLeft className="w-4 h-4" /> Назад</button><div className="grid gap-4 max-w-4xl w-full">{materials.map(m => <div key={m.id} className="bg-white p-6 rounded-2xl shadow flex justify-between items-center text-left"><h4 className="font-black text-slate-900 uppercase text-left">{m.title}</h4><div className="flex gap-4"><button onClick={() => updateDoc(doc(db, 'artifacts', PORTAL_ID, 'public', 'data', 'materials', m.id), {isVisible: !m.isVisible})} className={`p-4 rounded-xl ${m.isVisible ? 'bg-emerald-500 text-white' : 'bg-slate-100 text-slate-400'}`}>{m.isVisible ? <Unlock className="w-5 h-5"/> : <Lock className="w-5 h-5"/>}</button><button onClick={() => deleteDoc(doc(db, 'artifacts', PORTAL_ID, 'public', 'data', 'materials', m.id))} className="p-4 bg-red-50 text-red-500 rounded-xl"><Trash2 className="w-5 h-5"/></button></div></div>)}</div></div>;
       case 'admin-tasks-list': return <div className="p-10 bg-slate-50 min-h-screen text-center flex flex-col items-center"><button onClick={() => setView('admin')} className="mb-10 text-slate-400 font-black uppercase text-xs flex items-center gap-2 self-start"><ArrowLeft className="w-4 h-4" /> Назад</button><button onClick={() => setView('setup-tasks')} className="mb-6 w-full max-w-4xl bg-slate-900 text-white py-6 rounded-2xl font-black uppercase text-xs">Добавить задачи</button><div className="grid gap-4 max-w-4xl w-full">{taskSections.map(s => <div key={s.id} className="bg-white p-6 rounded-2xl shadow flex justify-between items-center text-left"><h4 className="font-black text-slate-900 uppercase text-left">{s.title}</h4><div className="flex gap-4"><button onClick={() => updateDoc(doc(db, 'artifacts', PORTAL_ID, 'public', 'data', 'task_sections', s.id), {isVisible: !s.isVisible})} className={`p-4 rounded-xl ${s.isVisible ? 'bg-blue-500 text-white' : 'bg-slate-100 text-slate-400'}`}>{s.isVisible ? <Unlock className="w-5 h-5"/> : <Lock className="w-5 h-5"/>}</button><button onClick={() => deleteDoc(doc(db, 'artifacts', PORTAL_ID, 'public', 'data', 'task_sections', s.id))} className="p-4 bg-red-50 text-red-500 rounded-xl"><Trash2 className="w-5 h-5"/></button></div></div>)}</div></div>;
       case 'setup-tasks': return <div className="min-h-screen bg-slate-950 flex items-center justify-center p-4"><div className="max-w-4xl w-full bg-white p-10 rounded-[3rem] text-center flex flex-col items-center"><button onClick={() => setView('admin-tasks-list')} className="mb-8 text-slate-400 font-black uppercase text-xs flex items-center gap-2 self-start"><ArrowLeft className="w-4 h-4" /> Назад</button><h2 className="text-3xl font-black uppercase mb-6">Новые задачи</h2><input value={inputTitle} onChange={e => setInputTitle(e.target.value)} className="w-full p-6 bg-slate-50 rounded-2xl mb-4 font-bold text-center" placeholder="Название темы" /><textarea value={inputText} onChange={e => setInputText(e.target.value)} className="w-full h-64 p-6 bg-slate-50 rounded-2xl mb-6 font-bold text-left" placeholder="Задача [ТЕКСТ] Ответ [ЭТАЛОН]..." /><button onClick={handleSaveTasks} className="w-full bg-blue-600 text-white py-6 rounded-2xl font-black uppercase">Загрузить</button></div></div>;
