@@ -15,21 +15,18 @@ export default async function handler(req, res) {
 
   const { prompt } = req.body;
   
-  // ПРОБУЕМ НАЙТИ ЛЮБОЙ КЛЮЧ (HF или GEMINI)
-  // Vercel иногда скрывает префикс VITE_ на сервере, поэтому проверяем разные варианты
+  // Пробуем найти любой ключ
   const apiKey = process.env.VITE_HF_KEY || process.env.VITE_GEMINI_KEY || process.env.HF_KEY;
 
   if (!apiKey) {
-    console.error("API Key is missing on server");
-    return res.status(500).json({ error: 'Server configuration error: API Key not found' });
+    return res.status(500).json({ error: 'Server API Key is missing. Check Vercel Settings.' });
   }
 
   try {
-    // 2. ОТПРАВЛЯЕМ ЗАПРОС В HUGGING FACE (Qwen 2.5)
-    // Это мощная модель, которая отлично понимает русский
-    const url = "https://api-inference.huggingface.co/models/Qwen/Qwen2.5-72B-Instruct";
+    // 2. ИСПОЛЬЗУЕМ НОВЫЙ URL (router.huggingface.co)
+    // Это решит ошибку "no longer supported"
+    const url = "https://router.huggingface.co/models/Qwen/Qwen2.5-72B-Instruct";
     
-    // Формируем промпт специально для Qwen
     const qwenPrompt = `<|im_start|>system
 You are a strict medical professor. Generate exactly 30 multiple-choice questions in Russian based on the text.
 Output MUST be a raw JSON array. No markdown, no comments.
@@ -62,25 +59,22 @@ ${prompt}
     if (!result.ok) {
       const errorMsg = JSON.stringify(data);
       console.error("HF Error:", errorMsg);
-      // Если модель грузится, передаем это клиенту
       if (errorMsg.includes("loading")) {
-          return res.status(503).json({ error: "Model is loading", details: "Модель запускается на сервере, подождите 30 секунд." });
+          return res.status(503).json({ error: "Model is loading (Cold Start). Wait 30s and try again." });
       }
       throw new Error(data.error || "Hugging Face Error");
     }
 
-    // 3. Обработка ответа Hugging Face
+    // 3. Обработка ответа
     let rawContent = "";
     if (Array.isArray(data)) rawContent = data[0].generated_text;
     else if (data.generated_text) rawContent = data.generated_text;
     else throw new Error("Unknown response format");
 
-    // Вырезаем JSON
     const start = rawContent.indexOf('[');
     const end = rawContent.lastIndexOf(']') + 1;
     
     if (start === -1 || end <= 0) {
-       console.error("Raw AI response:", rawContent);
        throw new Error("AI did not return a valid JSON array.");
     }
 
