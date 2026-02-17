@@ -3,7 +3,7 @@ export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Credentials', true);
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS,POST');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
 
   if (req.method === 'OPTIONS') return res.status(200).end();
 
@@ -14,45 +14,48 @@ export default async function handler(req, res) {
   const { prompt } = req.body;
   
   // Ключ берем из переменных окружения Vercel
-  // Поддерживаем разные имена переменных для удобства
   const apiKey = process.env.GOOGLE_API_KEY || process.env.VITE_GEMINI_KEY;
 
   if (!apiKey) {
-    return res.status(500).json({ error: 'Server API Key is missing. Please add GOOGLE_API_KEY to Vercel.' });
+    return res.status(500).json({ error: 'Server API Key is missing. Add GOOGLE_API_KEY to Vercel.' });
   }
 
   try {
-    // 2. Используем Gemini 1.5 Flash через v1beta (поддерживает JSON mode)
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`;
+    // ВАЖНО: Используем ту самую модель, которая ответила "Pong!"
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
     
+    // Строгая схема ответа
     const requestBody = {
       contents: [{
         parts: [{
           text: `
-            Ты профессиональный преподаватель в медицинском вузе.
-            Твоя задача: на основе предоставленного текста лекции составить 30 тестовых вопросов на русском языке.
+            Ты профессиональный преподаватель медицины.
+            Твоя задача: на основе текста лекции составить 30 тестовых вопросов на русском языке.
             
-            ФОРМАТ ОТВЕТА (СТРОГО):
-            Ты должен вернуть ТОЛЬКО валидный JSON массив объектов. Без markdown, без слова 'json', без кавычек вокруг.
-            Структура каждого объекта:
-            {
-              "text": "Текст вопроса?",
-              "options": ["Вариант А", "Вариант Б", "Вариант В", "Вариант Г"],
-              "correctIndex": 0 (число от 0 до 3)
-            }
-
             ТЕКСТ ЛЕКЦИИ:
             ${prompt}
+            
+            ФОРМАТ ОТВЕТА (JSON):
+            Верни ТОЛЬКО массив JSON. 
+            Пример структуры:
+            [
+              {
+                "text": "Вопрос?",
+                "options": ["A", "B", "C", "D"],
+                "correctIndex": 0
+              }
+            ]
           `
         }]
       }],
-      // Ключевая настройка: заставляет модель вернуть JSON
       generationConfig: {
-        responseMimeType: "application/json",
-        temperature: 0.3
+        // Эта настройка гарантирует, что придет JSON, а не текст
+        responseMimeType: "application/json"
       }
     };
 
+    console.log("Sending request to Gemini 2.5...");
+    
     const response = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -64,17 +67,17 @@ export default async function handler(req, res) {
     if (!response.ok) {
       const errorMsg = data.error?.message || response.statusText;
       console.error("Gemini Error:", errorMsg);
-      throw new Error(errorMsg);
+      throw new Error(`Google API Error: ${errorMsg}`);
     }
 
-    // 3. Получаем и проверяем ответ
-    // Благодаря responseMimeType, text уже будет валидным JSON
+    // Получаем текст ответа
     const generatedText = data.candidates?.[0]?.content?.parts?.[0]?.text;
     
     if (!generatedText) {
       throw new Error("Empty response from AI");
     }
 
+    // Парсим JSON
     let questions;
     try {
       questions = JSON.parse(generatedText);
@@ -83,12 +86,15 @@ export default async function handler(req, res) {
       throw new Error("AI returned invalid JSON structure");
     }
 
-    // Проверка структуры
+    // Если вернулся объект, а не массив (иногда бывает), ищем массив внутри
     if (!Array.isArray(questions)) {
-       // Если вернулся объект { questions: [...] }, достаем массив
-       if (questions.questions && Array.isArray(questions.questions)) {
-           questions = questions.questions;
+       // Если это объект вида { questions: [...] } или { data: [...] }
+       const values = Object.values(questions);
+       const foundArray = values.find(val => Array.isArray(val));
+       if (foundArray) {
+           questions = foundArray;
        } else {
+           // Если совсем не то, пробуем вернуть как есть, но это риск
            throw new Error("Response is not an array");
        }
     }
