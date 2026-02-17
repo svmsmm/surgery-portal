@@ -7,102 +7,100 @@ export default async function handler(req, res) {
 
   if (req.method === 'OPTIONS') return res.status(200).end();
 
-  if (req.method !== 'POST') {
-    return res.status(405).json({ error: 'Method not allowed' });
-  }
-
   const { prompt } = req.body;
-  
-  // Ключ берем из переменных окружения Vercel
-  const apiKey = process.env.GOOGLE_API_KEY || process.env.VITE_GEMINI_KEY;
+  const apiKey = process.env.VITE_HF_KEY || process.env.HF_KEY || process.env.VITE_GEMINI_KEY;
 
   if (!apiKey) {
-    return res.status(500).json({ error: 'Server API Key is missing. Add GOOGLE_API_KEY to Vercel.' });
+    return res.status(500).json({ error: 'Server API Key is missing.' });
   }
 
-  try {
-    // ВАЖНО: Используем ту самую модель, которая ответила "Pong!"
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
-    
-    // Строгая схема ответа
-    const requestBody = {
-      contents: [{
-        parts: [{
-          text: `
-            Ты профессиональный преподаватель медицины.
-            Твоя задача: на основе текста лекции составить 30 тестовых вопросов на русском языке.
-            
-            ТЕКСТ ЛЕКЦИИ:
-            ${prompt}
-            
-            ФОРМАТ ОТВЕТА (JSON):
-            Верни ТОЛЬКО массив JSON. 
-            Пример структуры:
-            [
-              {
-                "text": "Вопрос?",
-                "options": ["A", "B", "C", "D"],
-                "correctIndex": 0
-              }
-            ]
-          `
-        }]
-      }],
-      generationConfig: {
-        // Эта настройка гарантирует, что придет JSON, а не текст
-        responseMimeType: "application/json"
-      }
-    };
+  // СПИСОК МОДЕЛЕЙ (Используем router.huggingface.co)
+  // Mistral v0.3 сейчас одна из самых стабильных на router
+  const models = [
+    "mistralai/Mistral-7B-Instruct-v0.3", 
+    "Qwen/Qwen2.5-72B-Instruct", 
+    "Qwen/Qwen2.5-7B-Instruct"
+  ];
 
-    console.log("Sending request to Gemini 2.5...");
-    
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(requestBody)
-    });
+  let lastError = null;
 
-    const data = await response.json();
-
-    if (!response.ok) {
-      const errorMsg = data.error?.message || response.statusText;
-      console.error("Gemini Error:", errorMsg);
-      throw new Error(`Google API Error: ${errorMsg}`);
-    }
-
-    // Получаем текст ответа
-    const generatedText = data.candidates?.[0]?.content?.parts?.[0]?.text;
-    
-    if (!generatedText) {
-      throw new Error("Empty response from AI");
-    }
-
-    // Парсим JSON
-    let questions;
+  for (const model of models) {
     try {
-      questions = JSON.parse(generatedText);
+      console.log(`Trying model: ${model} via Router...`);
+      
+      // ВАЖНО: Используем новый домен router.huggingface.co с поддержкой /v1/chat/completions
+      const url = `https://router.huggingface.co/models/${model}/v1/chat/completions`;
+
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { 
+          'Authorization': `Bearer ${apiKey}`,
+          'Content-Type': 'application/json' 
+        },
+        body: JSON.stringify({
+          model: model,
+          messages: [
+            { 
+                role: "system", 
+                content: "You are a medical professor. Generate 30 multiple-choice questions in Russian based on the text. Output ONLY a valid JSON Array. No markdown." 
+            },
+            { role: "user", content: prompt }
+          ],
+          max_tokens: 4000,
+          temperature: 0.2
+        })
+      });
+
+      // Считываем как текст, чтобы не упасть при ошибке 404/503 (часто возвращают HTML или plain text)
+      const textResponse = await response.text();
+
+      if (!response.ok) {
+        console.warn(`Model ${model} failed: ${response.status} - ${textResponse}`);
+        lastError = `HTTP ${response.status} on ${model}`;
+        // Если 404 (модель не найдена на роутере) или 503 (загрузка), пробуем следующую
+        continue;
+      }
+
+      // Пробуем распарсить ответ как JSON (формат OpenAI)
+      let data;
+      try {
+        data = JSON.parse(textResponse);
+      } catch (e) {
+        lastError = `Invalid JSON from ${model}`;
+        continue;
+      }
+
+      const content = data.choices?.[0]?.message?.content;
+      
+      if (!content) {
+         lastError = `Empty content from ${model}`;
+         continue;
+      }
+
+      // Ищем JSON-массив с вопросами внутри текста
+      const start = content.indexOf('[');
+      const end = content.lastIndexOf(']') + 1;
+      
+      if (start === -1 || end <= 0) {
+         lastError = `No JSON array in ${model} response`;
+         continue;
+      }
+
+      const cleanJson = content.substring(start, end);
+      const questions = JSON.parse(cleanJson);
+
+      // Успех!
+      return res.status(200).json({ questions, modelUsed: model });
+
     } catch (e) {
-      console.error("JSON Parse Error:", generatedText);
-      throw new Error("AI returned invalid JSON structure");
+      console.error(`Error with ${model}:`, e.message);
+      lastError = e.message;
     }
-
-    // Если вернулся объект, а не массив (иногда бывает), ищем массив внутри
-    if (!Array.isArray(questions)) {
-       // Если это объект вида { questions: [...] } или { data: [...] }
-       const values = Object.values(questions);
-       const foundArray = values.find(val => Array.isArray(val));
-       if (foundArray) {
-           questions = foundArray;
-       } else {
-           // Если совсем не то, пробуем вернуть как есть, но это риск
-           throw new Error("Response is not an array");
-       }
-    }
-
-    return res.status(200).json({ questions });
-
-  } catch (error) {
-    console.error("Server Error:", error);
-    return res.status(500).json({ error: error.message });
   }
+
+  // Если все модели перебрали и ни одна не ответила
+  return res.status(500).json({ 
+    error: `All models failed. Last error: ${lastError}`,
+    details: "Check API Key permissions or Hugging Face status."
+  });
 }
