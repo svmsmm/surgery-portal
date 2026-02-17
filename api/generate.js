@@ -1,89 +1,102 @@
 export default async function handler(req, res) {
-  // CORS
+  // 1. Настройка CORS
   res.setHeader('Access-Control-Allow-Credentials', true);
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS,POST');
-  res.setHeader('Access-Control-Allow-Headers', 'X-CSRF-Token, X-Requested-With, Accept, Accept-Version, Content-Length, Content-MD5, Content-Type, Date, X-Api-Version');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
   if (req.method === 'OPTIONS') return res.status(200).end();
 
+  if (req.method !== 'POST') {
+    return res.status(405).json({ error: 'Method not allowed' });
+  }
+
+  const { prompt } = req.body;
+  
+  // Ключ берем из переменных окружения Vercel
+  // Поддерживаем разные имена переменных для удобства
+  const apiKey = process.env.GOOGLE_API_KEY || process.env.VITE_GEMINI_KEY;
+
+  if (!apiKey) {
+    return res.status(500).json({ error: 'Server API Key is missing. Please add GOOGLE_API_KEY to Vercel.' });
+  }
+
   try {
-    const { prompt, apiKey: clientApiKey } = req.body;
+    // 2. Используем Gemini 1.5 Flash через v1beta (поддерживает JSON mode)
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`;
     
-    // 1. Приоритет ключу от клиента (из админки), затем из Vercel
-    const apiKey = clientApiKey || process.env.VITE_HF_KEY || process.env.HF_KEY;
+    const requestBody = {
+      contents: [{
+        parts: [{
+          text: `
+            Ты профессиональный преподаватель в медицинском вузе.
+            Твоя задача: на основе предоставленного текста лекции составить 30 тестовых вопросов на русском языке.
+            
+            ФОРМАТ ОТВЕТА (СТРОГО):
+            Ты должен вернуть ТОЛЬКО валидный JSON массив объектов. Без markdown, без слова 'json', без кавычек вокруг.
+            Структура каждого объекта:
+            {
+              "text": "Текст вопроса?",
+              "options": ["Вариант А", "Вариант Б", "Вариант В", "Вариант Г"],
+              "correctIndex": 0 (число от 0 до 3)
+            }
 
-    if (!apiKey) {
-      return res.status(401).json({ error: 'API Key is missing. Enter it in the Admin panel.' });
-    }
-
-    // 2. Список моделей Hugging Face (в порядке приоритета)
-    const models = [
-      "Qwen/Qwen2.5-72B-Instruct",
-      "Qwen/Qwen2.5-7B-Instruct",
-      "mistralai/Mistral-7B-Instruct-v0.3",
-      "google/gemma-2-9b-it"
-    ];
-
-    let lastError = null;
-
-    for (const model of models) {
-      try {
-        console.log(`Trying model: ${model}`);
-        const url = `https://router.huggingface.co/models/${model}/v1/chat/completions`;
-
-        const response = await fetch(url, {
-          method: 'POST',
-          headers: { 
-            'Authorization': `Bearer ${apiKey}`,
-            'Content-Type': 'application/json' 
-          },
-          body: JSON.stringify({
-            model: model,
-            messages: [
-              { role: "system", content: "You are a medical professor. Generate 5-10 multiple-choice questions in Russian. Output valid JSON Array only. No markdown." },
-              { role: "user", content: prompt }
-            ],
-            max_tokens: 3000,
-            temperature: 0.1
-          })
-        });
-
-        if (!response.ok) {
-           const errText = await response.text();
-           if (response.status === 503) { // Loading
-             throw new Error(`Model loading: ${errText}`);
-           }
-           if (response.status === 404) { // Not found
-             continue; 
-           }
-           throw new Error(`HF Error ${response.status}: ${errText}`);
-        }
-
-        const data = await response.json();
-        const content = data.choices?.[0]?.message?.content;
-        
-        if (!content) throw new Error("Empty response from AI");
-
-        // Парсинг JSON
-        const start = content.indexOf('[');
-        const end = content.lastIndexOf(']') + 1;
-        
-        if (start === -1) throw new Error("No JSON array found in response");
-        
-        const cleanJson = content.substring(start, end);
-        const questions = JSON.parse(cleanJson);
-
-        return res.status(200).json({ questions, model });
-      } catch (e) {
-        console.warn(`Model ${model} failed:`, e.message);
-        lastError = e.message;
+            ТЕКСТ ЛЕКЦИИ:
+            ${prompt}
+          `
+        }]
+      }],
+      // Ключевая настройка: заставляет модель вернуть JSON
+      generationConfig: {
+        responseMimeType: "application/json",
+        temperature: 0.3
       }
+    };
+
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(requestBody)
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      const errorMsg = data.error?.message || response.statusText;
+      console.error("Gemini Error:", errorMsg);
+      throw new Error(errorMsg);
     }
 
-    throw new Error(`All models failed. Last error: ${lastError}`);
+    // 3. Получаем и проверяем ответ
+    // Благодаря responseMimeType, text уже будет валидным JSON
+    const generatedText = data.candidates?.[0]?.content?.parts?.[0]?.text;
+    
+    if (!generatedText) {
+      throw new Error("Empty response from AI");
+    }
+
+    let questions;
+    try {
+      questions = JSON.parse(generatedText);
+    } catch (e) {
+      console.error("JSON Parse Error:", generatedText);
+      throw new Error("AI returned invalid JSON structure");
+    }
+
+    // Проверка структуры
+    if (!Array.isArray(questions)) {
+       // Если вернулся объект { questions: [...] }, достаем массив
+       if (questions.questions && Array.isArray(questions.questions)) {
+           questions = questions.questions;
+       } else {
+           throw new Error("Response is not an array");
+       }
+    }
+
+    return res.status(200).json({ questions });
 
   } catch (error) {
+    console.error("Server Error:", error);
     return res.status(500).json({ error: error.message });
   }
 }
