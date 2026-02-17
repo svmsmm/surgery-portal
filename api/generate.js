@@ -1,5 +1,5 @@
 export default async function handler(req, res) {
-  // 1. Настройка CORS
+  // Настройка CORS (разрешаем браузеру получать ответ)
   res.setHeader('Access-Control-Allow-Credentials', true);
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS,PATCH,DELETE,POST,PUT');
@@ -8,6 +8,7 @@ export default async function handler(req, res) {
     'X-CSRF-Token, X-Requested-With, Accept, Accept-Version, Content-Length, Content-MD5, Content-Type, Date, X-Api-Version'
   );
 
+  // Если это предварительный запрос проверки (OPTIONS), отвечаем OK
   if (req.method === 'OPTIONS') {
     res.status(200).end();
     return;
@@ -15,74 +16,48 @@ export default async function handler(req, res) {
 
   const { prompt } = req.body;
   
-  // Пробуем найти любой ключ в переменных окружения
-  const apiKey = process.env.VITE_HF_KEY || process.env.VITE_GEMINI_KEY || process.env.HF_KEY;
+  // Получаем ключ из настроек Vercel (серверных переменных)
+  const apiKey = process.env.VITE_GEMINI_KEY; 
 
   if (!apiKey) {
-    return res.status(500).json({ error: 'Server API Key is missing. Check Vercel Settings.' });
+    return res.status(500).json({ error: 'Server API Key is missing.' });
   }
 
   try {
-    // 2. ИСПОЛЬЗУЕМ НОВЫЙ URL (router.huggingface.co)
-    // Модель Qwen 2.5 72B Instruct - мощная и бесплатная
-    const url = "https://router.huggingface.co/models/Qwen/Qwen2.5-72B-Instruct";
+    // Сервер Vercel отправляет запрос в Google (из США).
+    // Используем v1beta, так как модель 1.5-flash там доступна.
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`;
     
-    const qwenPrompt = `<|im_start|>system
-You are a strict medical professor. Generate exactly 30 multiple-choice questions in Russian based on the text.
-Output MUST be a raw JSON array. No markdown, no comments.
-Format: [{"text": "Вопрос", "options": ["А", "Б", "В", "Г"], "correctIndex": 0}]
-<|im_end|>
-<|im_start|>user
-${prompt}
-<|im_end|>
-<|im_start|>assistant
-`;
-
     const result = await fetch(url, {
       method: 'POST',
-      headers: { 
-        'Authorization': `Bearer ${apiKey}`,
-        'Content-Type': 'application/json' 
-      },
-      body: JSON.stringify({ 
-        inputs: qwenPrompt,
-        parameters: { 
-            max_new_tokens: 4000,
-            return_full_text: false,
-            temperature: 0.1
-        }
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: prompt }] }]
+        // Мы НЕ отправляем generationConfig, чтобы избежать ошибки Invalid Payload
       })
     });
 
-    // Обработка ошибок самого Hugging Face
-    if (!result.ok) {
-      const errorText = await result.text();
-      console.error("HF Error:", errorText);
-      if (errorText.includes("loading")) {
-          return res.status(503).json({ error: "Model is loading (Cold Start). Wait 30s and try again." });
-      }
-      return res.status(result.status).json({ error: `HuggingFace Error: ${errorText}` });
-    }
-
     const data = await result.json();
 
-    // 3. Обработка ответа
-    let rawContent = "";
-    if (Array.isArray(data)) rawContent = data[0].generated_text;
-    else if (data.generated_text) rawContent = data.generated_text;
-    else throw new Error("Unknown response format");
+    if (!result.ok) {
+      throw new Error(data.error?.message || result.statusText);
+    }
 
-    // Вырезаем JSON
+    // Чистим ответ прямо на сервере
+    let rawContent = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
+    
+    // Ищем JSON
     const start = rawContent.indexOf('[');
     const end = rawContent.lastIndexOf(']') + 1;
     
     if (start === -1 || end <= 0) {
-       throw new Error("AI did not return a valid JSON array.");
+       throw new Error("AI returned text instead of JSON array.");
     }
 
     const cleanJson = rawContent.substring(start, end);
     const questions = JSON.parse(cleanJson);
 
+    // Возвращаем готовые вопросы клиенту
     return res.status(200).json({ questions });
 
   } catch (error) {

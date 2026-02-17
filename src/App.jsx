@@ -15,6 +15,7 @@ import {
   getAuth, signInAnonymously, onAuthStateChanged 
 } from 'firebase/auth';
 
+// --- FIREBASE ---
 const firebaseConfig = {
   apiKey: "AIzaSyCgoD4vZCEU2W_w3TzE3102JcnlXnocmMg",
   authDomain: "surgery-app-89c4c.firebaseapp.com",
@@ -121,7 +122,7 @@ const App = () => {
     return `${min}:${sec < 10 ? '0' + sec : sec}`;
   };
 
-  // --- ГЕНЕРАЦИЯ ЧЕРЕЗ СЕРВЕР (HUGGING FACE) ---
+  // --- ЛОГИКА ГЕНЕРАЦИИ ЧЕРЕЗ СЕРВЕР (Server-Side Proxy) ---
   const handleGenerateTest = async (existing = null) => {
     setDebugLog(""); 
     const text = existing ? existing.content : inputText;
@@ -132,30 +133,38 @@ const App = () => {
     setIsLoading(true);
 
     try {
-      // Отправляем текст на НАШ сервер
+      // Подготовка промпта
+      const prompt = `
+        You are a medical professor. 
+        Generate exactly 30 multiple-choice questions in Russian based on the text.
+        
+        CRITICAL OUTPUT RULES:
+        1. Return ONLY a valid JSON array.
+        2. No markdown formatting (no \`\`\`json).
+        3. No intro or outro text.
+        4. Array structure: [{"text": "Question", "options": ["A", "B", "C", "D"], "correctIndex": 0}]
+
+        TEXT:
+        ${text.substring(0, 40000)}
+      `;
+
+      // Отправляем запрос на НАШ сервер
       const res = await fetch('/api/generate', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({ 
-            prompt: text.substring(0, 30000) 
-        })
+        body: JSON.stringify({ prompt })
       });
 
-      // Сначала проверяем, не вернул ли сервер HTML (404 Not Found)
+      // Проверка на ошибку 404 (если файл api/generate.js не найден)
       const contentType = res.headers.get("content-type");
       if (!contentType || !contentType.includes("application/json")) {
-          // Это значит, что файл api/generate.js не найден на сервере
-          setDebugLog("ОШИБКА 404: Серверная функция не найдена. Проверьте, что папка 'api' находится в корне проекта (не в src).");
-          throw new Error("Endpoint /api/generate not found");
+          setDebugLog("ОШИБКА 404: Серверная функция не найдена. Убедитесь, что папка 'api' лежит в корне проекта.");
+          throw new Error("Server function missing");
       }
 
       const data = await res.json();
       
       if (!res.ok) {
-        if (res.status === 503) {
-            setDebugLog("Модель запускается... (Cold start). Подождите 30 сек и нажмите снова.");
-            throw new Error("Модель загружается...");
-        }
         setDebugLog(`SERVER ERROR: ${data.error}`);
         throw new Error(data.error);
       }
@@ -173,7 +182,6 @@ const App = () => {
       setInputText(''); setInputTitle('');
     } catch (e) { 
       console.error(e);
-      // Если debugLog пуст, пишем туда сообщение исключения
       setDebugLog(prev => prev || e.message); 
       showToast("Ошибка. См. лог.");
     } finally { setIsLoading(false); }
@@ -264,14 +272,16 @@ const App = () => {
               </div>
             </div>
             
+            {/* ИНФО О СЕРВЕРЕ */}
             <div className="bg-blue-900 p-8 rounded-[3rem] mb-12 shadow-2xl flex flex-col md:flex-row items-center gap-6 border-4 border-blue-500/20 text-center">
                 <div className="bg-blue-500 p-4 rounded-2xl"><Server className="text-white w-8 h-8" /></div>
                 <div className="flex-1 text-left">
                     <h3 className="text-white font-black uppercase text-sm mb-1 text-left">Режим Сервера (США)</h3>
-                    <p className="text-blue-200 text-[10px] font-bold uppercase tracking-widest text-left">Используем прокси Vercel + Hugging Face. Ключ на сервере.</p>
+                    <p className="text-blue-200 text-[10px] font-bold uppercase tracking-widest text-left">Запросы к ИИ идут через прокси Vercel. Ключ на клиенте не нужен.</p>
                 </div>
             </div>
 
+            {/* БЛОК ДИАГНОСТИКИ */}
             {debugLog && (
                 <div className="bg-red-950 p-6 rounded-2xl mb-10 border-2 border-red-500 text-left text-red-200 font-mono text-xs overflow-auto max-w-4xl mx-auto whitespace-pre-wrap">
                     <div className="font-bold mb-2 flex items-center gap-2"><Bug className="w-4 h-4"/> ДИАГНОСТИКА:</div>
@@ -314,7 +324,7 @@ const App = () => {
                 </div>
                 <button disabled={isLoading || !inputText || !inputTitle} onClick={() => handleGenerateTest()} className="w-full mt-10 bg-emerald-600 hover:bg-emerald-500 text-white font-black py-8 rounded-[2.5rem] shadow-2xl active:scale-95 transition-all uppercase tracking-[0.2em] shadow-emerald-500/20 text-xl flex items-center justify-center gap-6 text-center">
                   {isLoading ? <Loader2 className="animate-spin w-8 h-8 text-center"/> : <RefreshCw className="w-8 h-8 text-center"/>} 
-                  {isLoading ? "ГЕНЕРАЦИЯ..." : "СФОРМИРОВАТЬ ТЕСТ"}
+                  {isLoading ? "ГЕНЕРАЦИЯ (Server)..." : "СФОРМИРОВАТЬ ТЕСТ"}
                 </button>
             </div>
         </div>
