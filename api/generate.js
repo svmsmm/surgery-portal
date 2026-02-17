@@ -16,18 +16,15 @@ export default async function handler(req, res) {
     return res.status(401).json({ error: 'API Key is missing.' });
   }
 
-  // СПИСОК МОДЕЛЕЙ (Сначала ваша новая, потом запасные)
+  // СПИСОК МОДЕЛЕЙ (Ваш запрос - первая в списке)
   const models = [
-    "Qwen/Qwen2.5-Coder-32B-Instruct", // Qwen 3 experimental может быть нестабилен, ставим сильный 2.5 Coder как базу или пробуем novita если доступна
-    "Qwen/Qwen2.5-72B-Instruct",
-    "mistralai/Mistral-7B-Instruct-v0.3"
+    "Qwen/Qwen3-Coder-Next:novita",    // Запрошенная модель
+    "Qwen/Qwen2.5-Coder-32B-Instruct", // Очень сильный кодер (резерв 1)
+    "Qwen/Qwen2.5-72B-Instruct",       // Общий интеллект (резерв 2)
+    "mistralai/Mistral-7B-Instruct-v0.3" // Надежная классика (резерв 3)
   ];
-  
-  // Примечание: "Qwen/Qwen3-Coder-Next:novita" может требовать специфических прав.
-  // Я добавил его первым, но если он не сработает, код перейдет к Qwen 2.5.
-  models.unshift("Qwen/Qwen2.5-Coder-32B-Instruct"); // Используем общедоступный Coder, так как "Next:novita" часто приватный
 
-  // Правильный URL из вашего примера
+  // Правильный URL для OpenAI-совместимого API на роутере HF
   const url = "https://router.huggingface.co/v1/chat/completions";
 
   let lastError = null;
@@ -43,7 +40,7 @@ export default async function handler(req, res) {
           'Content-Type': 'application/json' 
         },
         body: JSON.stringify({
-          model: model, // Передаем имя модели внутри JSON
+          model: model, // Имя модели передается внутри тела запроса
           messages: [
             { 
               role: "system", 
@@ -55,7 +52,7 @@ export default async function handler(req, res) {
             }
           ],
           max_tokens: 3000,
-          stream: false // Отключаем стриминг для простоты парсинга
+          stream: false
         })
       });
 
@@ -63,6 +60,7 @@ export default async function handler(req, res) {
 
       if (!response.ok) {
          console.warn(`Model ${model} error: ${textResponse}`);
+         // Сохраняем ошибку, но пробуем следующую модель в цикле
          lastError = `${model}: ${response.status} - ${textResponse}`;
          continue; 
       }
