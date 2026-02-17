@@ -15,7 +15,7 @@ export default async function handler(req, res) {
 
   const { prompt } = req.body;
   
-  // Пробуем найти любой ключ
+  // Пробуем найти любой ключ в переменных окружения
   const apiKey = process.env.VITE_HF_KEY || process.env.VITE_GEMINI_KEY || process.env.HF_KEY;
 
   if (!apiKey) {
@@ -24,7 +24,7 @@ export default async function handler(req, res) {
 
   try {
     // 2. ИСПОЛЬЗУЕМ НОВЫЙ URL (router.huggingface.co)
-    // Это решит ошибку "no longer supported"
+    // Модель Qwen 2.5 72B Instruct - мощная и бесплатная
     const url = "https://router.huggingface.co/models/Qwen/Qwen2.5-72B-Instruct";
     
     const qwenPrompt = `<|im_start|>system
@@ -54,16 +54,17 @@ ${prompt}
       })
     });
 
-    const data = await result.json();
-
+    // Обработка ошибок самого Hugging Face
     if (!result.ok) {
-      const errorMsg = JSON.stringify(data);
-      console.error("HF Error:", errorMsg);
-      if (errorMsg.includes("loading")) {
+      const errorText = await result.text();
+      console.error("HF Error:", errorText);
+      if (errorText.includes("loading")) {
           return res.status(503).json({ error: "Model is loading (Cold Start). Wait 30s and try again." });
       }
-      throw new Error(data.error || "Hugging Face Error");
+      return res.status(result.status).json({ error: `HuggingFace Error: ${errorText}` });
     }
+
+    const data = await result.json();
 
     // 3. Обработка ответа
     let rawContent = "";
@@ -71,6 +72,7 @@ ${prompt}
     else if (data.generated_text) rawContent = data.generated_text;
     else throw new Error("Unknown response format");
 
+    // Вырезаем JSON
     const start = rawContent.indexOf('[');
     const end = rawContent.lastIndexOf(']') + 1;
     
