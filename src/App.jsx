@@ -191,11 +191,10 @@ const App = () => {
     clearInterval(timerRef.current);
     if (!activeMaterial) return;
     
-    // ИСПРАВЛЕНИЕ: Приводим индексы к числу для надежного сравнения
+    // Считаем пустые ответы как неверные
     const score = studentAnswers.reduce((acc, ans, idx) => {
-        if (ans === undefined) return acc;
-        // Number(ans) === Number(...) гарантирует, что "0" будет равен 0
-        return acc + (Number(ans) === Number(activeMaterial.questions[idx].correctIndex) ? 1 : 0);
+        if (ans === undefined) return acc; // Пропуск
+        return acc + (ans === activeMaterial.questions[idx].correctIndex ? 1 : 0);
     }, 0);
 
     const total = activeMaterial.questions.length;
@@ -258,58 +257,54 @@ const App = () => {
       );
 
       case 'admin': return (
-        <div className="min-h-screen bg-slate-50 p-6 md:p-12 flex flex-col items-center">
-            <div className="max-w-6xl w-full">
-                <div className="flex flex-col md:flex-row justify-between items-center gap-10 mb-16 text-center">
-                   <div className="text-left"><h1 className="text-4xl font-black text-slate-900 uppercase tracking-tighter">Управление</h1></div>
-                   <div className="flex flex-wrap gap-4 justify-center">
-                        <button onClick={() => setView('admin-tasks-list')} className="bg-blue-600 text-white px-8 py-5 rounded-[2rem] text-[10px] font-black uppercase shadow-lg hover:bg-blue-700 flex items-center gap-2"><Stethoscope className="w-5 h-5" /> Задачи</button>
-                        <button onClick={() => setView('admin-materials')} className="bg-white text-slate-900 border-2 border-slate-200 px-8 py-5 rounded-[2rem] text-[10px] font-black uppercase shadow-sm hover:bg-slate-50 flex items-center gap-2"><ClipboardList className="w-5 h-5" /> Тесты</button>
-                        <button onClick={() => setView('setup-test')} className="bg-emerald-600 text-white px-8 py-5 rounded-[2rem] text-[10px] font-black uppercase shadow-xl hover:bg-emerald-700 flex items-center gap-2"><Plus className="w-5 h-5" /> Новый тест</button>
-                        <button onClick={() => {setIsAdminAuthenticated(false); setView('welcome');}} className="bg-white text-slate-400 px-6 py-5 rounded-xl text-[10px] font-black border-2 border-slate-100">Выход</button>
-                    </div>
-                </div>
-                
-                {/* ЖУРНАЛ РЕЗУЛЬТАТОВ С УДАЛЕНИЕМ */}
-                <div className="bg-white rounded-[4rem] shadow-xl overflow-hidden border border-slate-100 flex flex-col text-left">
-                  <div className="p-10 bg-slate-50/50 border-b border-slate-100 text-center font-black text-slate-900 uppercase text-xs tracking-[0.3em]">Журнал результатов</div>
-                  <div className="overflow-x-auto p-10">
-                    <table className="w-full text-left min-w-[600px]">
-                      <thead className="bg-slate-900 text-slate-400 text-[10px] uppercase font-black text-left">
-                        <tr>
-                            <th className="px-10 py-8">Курсант</th>
-                            <th className="px-10 py-8">Тема</th>
-                            <th className="px-10 py-8 text-center">Результат %</th>
-                            <th className="px-10 py-8 text-right">Управление</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-50 text-sm font-bold text-left">
-                        {results.map(r => (
-                          <tr key={r.id} className="hover:bg-slate-50 transition-all group">
-                            <td className="px-10 py-8 text-left">
-                                <div className="flex items-center gap-5 text-left">
-                                    <div className={`w-14 h-14 rounded-[1.2rem] flex items-center justify-center font-black text-xl border-2 ${r.percentage >= 70 ? 'border-emerald-100 bg-emerald-50 text-emerald-600' : 'border-red-100 bg-red-50 text-red-600'}`}>{r.studentName?.charAt(0)}</div>
-                                    <div className="text-left"><p className="font-black text-slate-900 text-lg uppercase text-left">{r.studentName}</p><p className="text-[10px] font-bold text-slate-400 uppercase text-left">{r.dateString}</p></div>
-                                </div>
-                            </td>
-                            <td className="px-10 py-8 text-slate-600 uppercase truncate max-w-[200px] text-left">{r.materialTitle}</td>
-                            <td className="px-10 py-8 text-center font-black text-3xl text-slate-900">{r.percentage}%</td>
-                            <td className="px-10 py-8 text-right">
-                                <button 
-                                    onClick={() => { if(confirm("Удалить этот результат?")) deleteDoc(doc(db, 'artifacts', PORTAL_ID, 'public', 'data', 'results', r.id)); }} 
-                                    className="p-3 bg-red-50 text-red-500 rounded-xl hover:bg-red-500 hover:text-white transition-all shadow-sm"
-                                    title="Удалить результат"
-                                >
-                                    <Trash2 className="w-5 h-5" />
-                                </button>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
+        <div className="min-h-screen w-full bg-slate-50 p-6 md:p-12 text-left flex flex-col items-center">
+          <div className="max-w-7xl w-full">
+            <div className="flex flex-col md:flex-row justify-between items-center gap-10 mb-16 text-center">
+              <div className="text-left"><h1 className="text-4xl font-black text-slate-900 uppercase tracking-tighter">Управление</h1></div>
+              <div className="flex flex-wrap gap-4 justify-center">
+                <button onClick={() => setView('admin-tasks-list')} className="bg-blue-600 text-white px-8 py-5 rounded-[2rem] text-[10px] font-black uppercase shadow-lg hover:bg-blue-700 flex items-center gap-2"><Stethoscope className="w-5 h-5" /> Задачи</button>
+                <button onClick={() => setView('admin-materials')} className="bg-white text-slate-900 border-2 border-slate-200 px-8 py-5 rounded-[2rem] text-[10px] font-black uppercase shadow-sm hover:bg-slate-50 flex items-center gap-2"><ClipboardList className="w-5 h-5" /> Тесты</button>
+                <button onClick={() => setView('setup-test')} className="bg-emerald-600 text-white px-8 py-5 rounded-[2rem] text-[10px] font-black uppercase shadow-xl hover:bg-emerald-700 flex items-center gap-2"><Plus className="w-5 h-5" /> Новый тест</button>
+                <button onClick={() => {setIsAdminAuthenticated(false); setView('welcome');}} className="bg-white text-slate-400 px-6 py-5 rounded-xl text-[10px] font-black border-2 border-slate-100">Выход</button>
+              </div>
             </div>
+            
+            <div className="bg-emerald-950 p-8 rounded-[3rem] mb-12 shadow-2xl flex flex-col md:flex-row items-center gap-6 border-4 border-emerald-500/20 text-center">
+                <div className="bg-emerald-500 p-4 rounded-2xl"><Key className="text-white w-8 h-8" /></div>
+                <div className="flex-1 text-left">
+                    <h3 className="text-white font-black uppercase text-sm mb-1 text-left">Ключ Hugging Face</h3>
+                    <p className="text-emerald-400 text-[10px] font-bold uppercase tracking-widest text-left">Используется модель Qwen 2.5 72B (или резервная).</p>
+                </div>
+                <input 
+                    type="password" 
+                    value={sessionGeminiKey} 
+                    onChange={(e) => setSessionGeminiKey(e.target.value)}
+                    placeholder="hf_..." 
+                    className="flex-1 p-5 bg-white/10 border-2 border-white/10 rounded-2xl text-white font-mono text-sm outline-none focus:border-emerald-500"
+                />
+            </div>
+
+            <div className="bg-white rounded-[4rem] shadow-xl overflow-hidden border border-slate-100 flex flex-col text-left">
+              <div className="p-10 bg-slate-50/50 border-b border-slate-100 text-center font-black text-slate-900 uppercase text-xs tracking-[0.3em]">Журнал результатов</div>
+              <div className="overflow-x-auto p-10">
+                <table className="w-full text-left min-w-[950px]">
+                  <thead className="bg-slate-900 text-slate-400 text-[10px] uppercase font-black text-left">
+                    <tr><th className="px-10 py-8">Курсант</th><th className="px-10 py-8">Тема</th><th className="px-10 py-8 text-center">Результат %</th><th className="px-10 py-8 text-right">Статус</th></tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-50 text-sm font-bold text-left">
+                    {results.map(r => (
+                      <tr key={r.id} className="hover:bg-slate-50 transition-all group">
+                        <td className="px-10 py-8 text-left"><div className="flex items-center gap-5 text-left"><div className={`w-14 h-14 rounded-[1.2rem] flex items-center justify-center font-black text-xl border-2 ${r.percentage >= 70 ? 'border-emerald-100 bg-emerald-50 text-emerald-600' : 'border-red-100 bg-red-50 text-red-600'}`}>{r.studentName?.charAt(0)}</div><div className="text-left"><p className="font-black text-slate-900 text-lg uppercase text-left">{r.studentName}</p><p className="text-[10px] font-bold text-slate-400 uppercase text-left">{r.dateString}</p></div></div></td>
+                        <td className="px-10 py-8 text-slate-600 uppercase truncate max-w-[200px] text-left">{r.materialTitle}</td>
+                        <td className="px-10 py-8 text-center font-black text-3xl text-slate-900">{r.percentage}%</td>
+                        <td className="px-10 py-8 text-right"><span className={`inline-block px-6 py-3 rounded-2xl text-[10px] font-black uppercase tracking-widest shadow-sm ${r.percentage >= 70 ? 'bg-emerald-600 text-white' : 'bg-red-50 text-white'}`}>{r.percentage >= 70 ? 'Зачет' : 'Незачет'}</span></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
         </div>
       );
       
@@ -325,15 +320,16 @@ const App = () => {
                 </div>
                 <button disabled={isLoading || !inputText || !inputTitle} onClick={() => handleGenerateTest()} className="w-full mt-10 bg-emerald-600 hover:bg-emerald-500 text-white font-black py-8 rounded-[2.5rem] shadow-2xl active:scale-95 transition-all uppercase tracking-[0.2em] shadow-emerald-500/20 text-xl flex items-center justify-center gap-6 text-center">
                   {isLoading ? <Loader2 className="animate-spin w-8 h-8 text-center"/> : <RefreshCw className="w-8 h-8 text-center"/>} 
-                  {isLoading ? "ГЕНЕРАЦИЯ..." : "СФОРМИРОВАТЬ ТЕСТ"}
+                  {isLoading ? "ГЕНЕРАЦИЯ (Server)..." : "СФОРМИРОВАТЬ ТЕСТ"}
                 </button>
             </div>
         </div>
       );
       
+      // ИСПРАВЛЕННАЯ ШИРИНА В АДМИНКЕ (max-w-6xl вместо 2xl)
       case 'admin-materials': return <div className="p-10 bg-slate-50 min-h-screen text-center flex flex-col items-center"><div className="max-w-6xl w-full"><button onClick={() => setView('admin')} className="mb-10 text-slate-400 font-black uppercase text-xs flex items-center gap-2 self-start"><ArrowLeft className="w-4 h-4" /> Назад</button><div className="grid gap-4 w-full">{materials.map(m => <div key={m.id} className="bg-white p-6 rounded-2xl shadow flex justify-between items-center text-left"><h4 className="font-black text-slate-900 uppercase text-left flex-1">{m.title}</h4><div className="flex gap-4"><button onClick={() => { setActiveMaterial(m); setView('admin-preview-test'); }} className="p-4 bg-slate-100 rounded-xl hover:bg-emerald-100 text-emerald-600 transition-all"><Eye className="w-5 h-5"/></button><button onClick={() => updateDoc(doc(db, 'artifacts', PORTAL_ID, 'public', 'data', 'materials', m.id), {isVisible: !m.isVisible})} className={`p-4 rounded-xl ${m.isVisible ? 'bg-emerald-500 text-white' : 'bg-slate-100 text-slate-400'}`}>{m.isVisible ? <Unlock className="w-5 h-5"/> : <Lock className="w-5 h-5"/>}</button><button onClick={() => deleteDoc(doc(db, 'artifacts', PORTAL_ID, 'public', 'data', 'materials', m.id))} className="p-4 bg-red-50 text-red-500 rounded-xl"><Trash2 className="w-5 h-5"/></button></div></div>)}</div></div></div>;
       
-      // ИСПРАВЛЕННЫЙ ПРОСМОТР ТЕСТА ДЛЯ АДМИНА (ПОДСВЕТКА)
+      // НОВЫЙ ЭКРАН: ПРОСМОТР ТЕСТА ДЛЯ АДМИНА
       case 'admin-preview-test': return (
         <div className="min-h-screen bg-slate-50 p-6 md:p-12 flex flex-col items-center">
             <div className="max-w-4xl w-full text-left">
@@ -345,9 +341,8 @@ const App = () => {
                             <h4 className="font-bold text-lg text-slate-900 mb-4">{i+1}. {q.question || q.text}</h4>
                             <div className="space-y-2">
                                 {q.options.map((opt, optI) => (
-                                    // Принудительное приведение к числу для подсветки
-                                    <div key={optI} className={`p-3 rounded-xl border-2 text-sm font-medium ${Number(optI) === Number(q.correctIndex) ? 'border-emerald-500 bg-emerald-50 text-emerald-800' : 'border-slate-100 text-slate-500'}`}>
-                                        {opt} {Number(optI) === Number(q.correctIndex) && "✅"}
+                                    <div key={optI} className={`p-3 rounded-xl border-2 text-sm font-medium ${optI === q.correctIndex ? 'border-emerald-500 bg-emerald-50 text-emerald-800' : 'border-slate-100 text-slate-500'}`}>
+                                        {opt}
                                     </div>
                                 ))}
                             </div>
@@ -367,31 +362,30 @@ const App = () => {
       case 'quiz': 
         if (!activeMaterial) return null;
         const q_quiz = activeMaterial.questions[currentQuestionIndex];
-        // Поддержка обоих вариантов названия поля вопроса
+        // Поддержка обоих вариантов названия поля вопроса (от Google или от HF)
         const qText = q_quiz.question || q_quiz.text; 
         const isAns_quiz = studentAnswers[currentQuestionIndex] !== undefined;
         
         return <div className="min-h-screen bg-slate-950 flex flex-col items-center text-center">
             {/* ШАПКА ТЕСТА С КНОПКОЙ ВЫХОДА */}
             <div className="w-full p-5 bg-slate-900 border-b border-slate-800 flex justify-between px-6 items-center text-white font-black tabular-nums">
-                <button onClick={quitQuiz} className="p-2 bg-red-900/30 text-red-500 rounded-lg hover:bg-red-900/50 transition-all" title="Выйти из теста"><X className="w-4 h-4"/></button>
+                <button onClick={quitQuiz} className="p-2 bg-red-900/30 text-red-500 rounded-lg hover:bg-red-900/50 transition-all"><X className="w-4 h-4"/></button>
                 <div className="flex gap-4">
                     <span>{formatTime(timeLeft)}</span>
                     <span className="text-slate-500">|</span>
                     <span>{currentQuestionIndex + 1} / {activeMaterial.questions.length}</span>
                 </div>
-                <div className="w-8"></div>
+                <div className="w-8"></div> {/* Placeholder для центрирования */}
             </div>
             
+            {/* ТЕЛО ВОПРОСА (ФИКС ШИРИНЫ) */}
             <div className="w-full max-w-3xl p-6 flex-1 flex flex-col justify-center text-left">
                 <div className="bg-white p-12 rounded-[3rem] shadow-2xl mb-8">
                     <h2 className="text-xl md:text-2xl font-bold text-slate-900 mb-8 leading-relaxed">{qText}</h2>
                     <div className="grid gap-3">
                         {q_quiz.options.map((opt, idx) => { 
                             const isSel = studentAnswers[currentQuestionIndex] === idx; 
-                            // Принудительное приведение к числу
-                            const isCorr = Number(idx) === Number(q_quiz.correctIndex); 
-                            
+                            const isCorr = idx === q_quiz.correctIndex; 
                             let cls = 'bg-slate-50 border-2 border-slate-100 text-slate-600 hover:border-blue-300'; 
                             if (isAns_quiz) { 
                                 if (isSel) cls = isCorr ? 'bg-emerald-50 border-emerald-500 text-emerald-700 font-black' : 'bg-red-50 border-red-500 text-red-700 font-black'; 
@@ -402,6 +396,7 @@ const App = () => {
                     </div>
                 </div>
                 
+                {/* НАВИГАЦИЯ */}
                 <div className="flex justify-between px-4">
                     <button disabled={currentQuestionIndex === 0} onClick={() => setCurrentQuestionIndex(p => p - 1)} className="text-slate-400 font-black uppercase text-xs flex items-center gap-2 hover:text-white transition-all"><ArrowLeft className="w-4 h-4"/> Назад</button>
                     {currentQuestionIndex === (activeMaterial.questions.length - 1) 
@@ -428,6 +423,12 @@ const App = () => {
         <div className="fixed bottom-10 left-1/2 -translate-x-1/2 bg-slate-900 text-white px-12 py-6 rounded-[2.5rem] font-black shadow-2xl z-[100] border-2 border-slate-700 uppercase text-xs animate-in fade-in slide-in-from-bottom-4 text-center text-center text-center">
           {toastMessage}
         </div>
+      )}
+      {debugLog && (
+          <div className="fixed top-10 left-1/2 -translate-x-1/2 bg-red-900 text-white px-10 py-5 rounded-2xl shadow-2xl z-[110] border-2 border-red-500 font-mono text-xs max-w-lg">
+              <div className="font-bold mb-2">ОТЛАДКА:</div>
+              {debugLog}
+          </div>
       )}
     </div>
   );
