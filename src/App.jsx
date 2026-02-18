@@ -4,7 +4,7 @@ import {
   Loader2, FileText, Eye, ShieldCheck, GraduationCap, ClipboardList, 
   Stethoscope, Clock, AlertCircle, FileSearch, Timer, Plus, 
   RefreshCw, Trash2, BookOpen, Lock, Unlock, EyeOff, ArrowLeft, ArrowRight,
-  Trophy, Settings, Key, Zap, Bug, Globe, Server, Activity, AlertOctagon
+  Trophy, Settings, Key, Zap, Bug, Globe, Server
 } from 'lucide-react';
 import { initializeApp, getApps } from 'firebase/app';
 import { 
@@ -15,11 +15,9 @@ import {
   getAuth, signInAnonymously, onAuthStateChanged 
 } from 'firebase/auth';
 
-// =================================================================
-// ВАЖНО: ВСТАВЬТЕ СЮДА НОВЫЙ КЛЮЧ FIREBASE (из Project Settings)
-// =================================================================
+// --- КОНФИГУРАЦИЯ FIREBASE ---
 const firebaseConfig = {
-  apiKey: "AIzaSyCgoD4vZCEU2W_w3TzE3102JcnlXnocmMg", // <--- ЗАМЕНИТЕ ЭТОТ КЛЮЧ, ЕСЛИ СТАРЫЙ УДАЛЕН
+  apiKey: "AIzaSyCgoD4vZCEU2W_w3TzE3102JcnlXnocmMg",
   authDomain: "surgery-app-89c4c.firebaseapp.com",
   projectId: "surgery-app-89c4c",
   storageBucket: "surgery-app-89c4c.firebasestorage.app",
@@ -28,46 +26,39 @@ const firebaseConfig = {
   measurementId: "G-1P2WMCMEMC"
 };
 
-// Инициализация с защитой от ошибок
+const isFirebaseReady = firebaseConfig && firebaseConfig.apiKey !== "";
 let app, auth, db;
-let firebaseError = null;
-
-try {
-  if (getApps().length === 0) {
-    app = initializeApp(firebaseConfig);
-  } else {
-    app = getApps()[0];
+if (isFirebaseReady) {
+  try {
+    app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApps()[0];
+    auth = getAuth(app);
+    db = getFirestore(app);
+  } catch (e) {
+    console.error("Firebase Init Error:", e);
   }
-  auth = getAuth(app);
-  db = getFirestore(app);
-} catch (e) {
-  console.error("Firebase Init Failed:", e);
-  firebaseError = e.message;
 }
 
 const PORTAL_ID = 'hospital-surgery-v2';
 const ADMIN_PASSWORD_SECRET = "601401";
 
 const App = () => {
-  // Если Firebase сломан на старте - показываем ошибку сразу
-  if (firebaseError) {
-      return (
-          <div className="min-h-screen bg-red-900 text-white flex flex-col items-center justify-center p-10 text-center">
-              <AlertOctagon className="w-20 h-20 mb-4" />
-              <h1 className="text-3xl font-black uppercase mb-4">Ошибка конфигурации</h1>
-              <p className="text-xl">Не удалось запустить базу данных.</p>
-              <p className="mt-4 font-mono bg-black/50 p-4 rounded text-sm">{firebaseError}</p>
-          </div>
-      );
-  }
-
   const [view, setView] = useState('welcome'); 
   const [user, setUser] = useState(null);
-  const [authError, setAuthError] = useState(null); // Состояние для ошибки входа
   const [studentName, setStudentName] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [toastMessage, setToastMessage] = useState(null);
   const [debugLog, setDebugLog] = useState(""); 
+
+  // Храним ключ для Hugging Face (hf_...)
+  const [sessionAiKey, setSessionAiKey] = useState("");
+
+  useEffect(() => {
+    try {
+      // Пытаемся подтянуть ключ из переменных окружения
+      const envKey = import.meta.env.VITE_HF_KEY || import.meta.env.VITE_GEMINI_KEY;
+      if (envKey) setSessionAiKey(envKey);
+    } catch (e) {}
+  }, []);
 
   const [materials, setMaterials] = useState([]); 
   const [taskSections, setTaskSections] = useState([]); 
@@ -88,20 +79,12 @@ const App = () => {
   const [inputTitle, setInputTitle] = useState('');
   const [inputText, setInputText] = useState('');
 
-  // 1. Авторизация с обработкой ошибок
+  // 1. Авторизация
   useEffect(() => {
-    if (!auth) return;
+    if (!isFirebaseReady || !auth) return;
     const unsubscribe = onAuthStateChanged(auth, (u) => {
-      if (!u) {
-          // Пытаемся войти анонимно
-          signInAnonymously(auth).catch(e => {
-              console.error("Auth Failed:", e);
-              setAuthError(e.message); // Показываем ошибку на экране
-          });
-      } else {
-          setUser(u);
-          setAuthError(null);
-      }
+      if (!u) signInAnonymously(auth).catch(e => setDebugLog("Auth Error: " + e.message));
+      else setUser(u);
     });
     return () => unsubscribe();
   }, []);
@@ -154,16 +137,17 @@ const App = () => {
     return `${min}:${sec < 10 ? '0' + sec : sec}`;
   };
 
+  // --- ТЕСТ СЕРВЕРА ---
   const checkServerHealth = async () => {
     setIsLoading(true);
     try {
         const res = await fetch('/api/health');
         if (res.ok) {
             const data = await res.json();
-            setDebugLog("✅ СЕРВЕР OK: " + JSON.stringify(data));
-            showToast("Сервер работает!");
+            setDebugLog("✅ СЕРВЕР РАБОТАЕТ: " + JSON.stringify(data));
+            showToast("Связь с сервером есть!");
         } else {
-            setDebugLog("❌ ОШИБКА СЕРВЕРА.");
+            setDebugLog("❌ ОШИБКА: Сервер не отвечает (404/500).");
         }
     } catch (e) {
         setDebugLog("❌ ОШИБКА СЕТИ: " + e.message);
@@ -172,21 +156,26 @@ const App = () => {
     }
   };
 
+  // --- ГЕНЕРАЦИЯ (ЧЕРЕЗ СЕРВЕР VERCEL -> HUGGING FACE) ---
   const handleGenerateTest = async (existing = null) => {
     setDebugLog(""); 
     const text = existing ? existing.content : inputText;
     const title = existing ? existing.title : inputTitle;
     
     if (!text.trim() || !title.trim()) return showToast("Заполните поля!");
+    // Ключ не требуем жестко, он может быть в ENV на сервере
 
     setIsLoading(true);
 
     try {
+      // Отправляем запрос на НАШ сервер
       const res = await fetch('/api/generate', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({ 
-            prompt: text.substring(0, 30000) 
+            // ИСПОЛЬЗУЕМ lectureText ВМЕСТО prompt
+            lectureText: text.substring(0, 30000), 
+            apiKey: sessionAiKey // Передаем ключ, если он введен вручную
         })
       });
 
@@ -201,20 +190,27 @@ const App = () => {
           throw new Error("Server endpoint problem");
       }
       
-      if (!res.ok) {
-        setDebugLog(`SERVER ERROR: ${data.error}`);
-        throw new Error(data.error);
+      if (!res.ok || !data.ok) {
+        const errMsg = data.error || "Unknown server error";
+        setDebugLog(`SERVER ERROR: ${errMsg}`);
+        throw new Error(errMsg);
       }
 
-      if (!data.questions || !Array.isArray(data.questions)) {
-          throw new Error("Сервер не вернул вопросы.");
+      // Если массив лежит в data.questions или data.data (зависит от версии api/generate.js)
+      const questionsArray = data.questions || data.data;
+
+      if (!questionsArray || !Array.isArray(questionsArray)) {
+          throw new Error("Сервер не вернул массив вопросов.");
       }
       
       await setDoc(doc(db, 'artifacts', PORTAL_ID, 'public', 'data', 'materials', existing?.id || crypto.randomUUID()), { 
-        title, content: text, questions: data.questions, updatedAt: Date.now(), isVisible: existing?.isVisible ?? false 
+        title, content: text, questions: questionsArray, updatedAt: Date.now(), isVisible: existing?.isVisible ?? false 
       });
       
-      showToast(`Тест создан! ${data.modelUsed ? `(${data.modelUsed})` : ""}`);
+      // Показываем какая модель сработала (для инфо)
+      const modelInfo = data.modelUsed ? `(${data.modelUsed})` : "";
+      showToast(`Тест создан! ${modelInfo}`);
+      
       setView('admin-materials');
       setInputText(''); setInputTitle('');
     } catch (e) { 
@@ -250,31 +246,8 @@ const App = () => {
     setView('result');
   };
 
-  // --- РЕНДЕР ---
   const renderCurrentView = () => {
-    // 1. ОШИБКА АВТОРИЗАЦИИ (Красный экран, если ключ удален)
-    if (authError) {
-        return (
-            <div className="min-h-screen flex flex-col items-center justify-center bg-slate-900 text-white p-6 text-center">
-                <div className="bg-red-600/20 border-2 border-red-500 p-8 rounded-[2.5rem]">
-                    <AlertTriangle className="w-16 h-16 mx-auto mb-4 text-red-500" />
-                    <h2 className="text-2xl font-black uppercase mb-4">Ошибка доступа</h2>
-                    <p className="mb-4 text-sm opacity-80">Не удалось подключиться к базе данных. <br/>Возможно, удален API ключ Firebase.</p>
-                    <div className="bg-black/50 p-4 rounded-xl font-mono text-xs text-left overflow-auto max-w-md">
-                        {authError}
-                    </div>
-                </div>
-            </div>
-        );
-    }
-
-    // 2. ЗАГРУЗКА
-    if (!user) return (
-        <div className="min-h-screen flex items-center justify-center bg-slate-950 text-white font-black animate-pulse uppercase tracking-widest text-center">
-            <Loader2 className="w-10 h-10 animate-spin mb-4" />
-            <br/>Подключение...
-        </div>
-    );
+    if (!user) return <div className="min-h-screen flex items-center justify-center bg-slate-950 text-white font-black animate-pulse uppercase tracking-widest text-center">Подключение...</div>;
 
     switch (view) {
       case 'welcome': return (
@@ -335,13 +308,26 @@ const App = () => {
             <div className="bg-blue-900 p-8 rounded-[3rem] mb-12 shadow-2xl flex flex-col md:flex-row items-center gap-6 border-4 border-blue-500/20 text-center">
                 <div className="bg-blue-500 p-4 rounded-2xl"><Server className="text-white w-8 h-8" /></div>
                 <div className="flex-1 text-left">
-                    <h3 className="text-white font-black uppercase text-sm mb-1 text-left">Статус сервера</h3>
-                    <p className="text-blue-200 text-[10px] font-bold uppercase tracking-widest text-left">Нажмите кнопку справа, чтобы проверить соединение.</p>
+                    <h3 className="text-white font-black uppercase text-sm mb-1 text-left">Сервер обработки (HF Qwen)</h3>
+                    <p className="text-blue-200 text-[10px] font-bold uppercase tracking-widest text-left">Запросы идут через прокси Vercel.</p>
                 </div>
+                 {/* КНОПКА ТЕСТА СЕРВЕРА */}
                  <button onClick={checkServerHealth} className={`px-6 py-3 rounded-2xl font-bold text-[10px] uppercase flex items-center gap-2 transition-all ${isLoading ? 'bg-yellow-100 text-yellow-700' : 'bg-white text-blue-900 hover:bg-blue-50'}`}>
                     {isLoading ? <Loader2 className="animate-spin w-3 h-3"/> : <Activity className="w-3 h-3"/>}
-                    Проверить
+                    Проверить сервер
                  </button>
+            </div>
+            
+            {/* ПОЛЕ ВВОДА КЛЮЧА HF */}
+            <div className="mb-8 w-full max-w-lg mx-auto">
+               <label className="text-slate-400 text-xs uppercase font-bold mb-2 block text-center">Если Vercel не настроен, введите ключ HF здесь:</label>
+               <input 
+                  type="password" 
+                  placeholder="hf_..." 
+                  value={sessionAiKey}
+                  onChange={(e) => setSessionAiKey(e.target.value)}
+                  className="w-full p-4 rounded-2xl bg-white border-2 border-slate-200 text-center font-mono text-sm"
+               />
             </div>
 
             {debugLog && (
@@ -391,7 +377,7 @@ const App = () => {
             </div>
         </div>
       );
-      // ... (admin-materials, admin-tasks-list, setup-tasks, student-select-test, student-select-tasks, quiz, result - тот же код, что и был, он работает)
+      // ... (Остальные экраны)
       case 'admin-materials': return <div className="p-10 bg-slate-50 min-h-screen text-center flex flex-col items-center"><button onClick={() => setView('admin')} className="mb-10 text-slate-400 font-black uppercase text-xs flex items-center gap-2 self-start"><ArrowLeft className="w-4 h-4" /> Назад</button><div className="grid gap-4 max-w-4xl w-full">{materials.map(m => <div key={m.id} className="bg-white p-6 rounded-2xl shadow flex justify-between items-center text-left"><h4 className="font-black text-slate-900 uppercase text-left">{m.title}</h4><div className="flex gap-4"><button onClick={() => updateDoc(doc(db, 'artifacts', PORTAL_ID, 'public', 'data', 'materials', m.id), {isVisible: !m.isVisible})} className={`p-4 rounded-xl ${m.isVisible ? 'bg-emerald-500 text-white' : 'bg-slate-100 text-slate-400'}`}>{m.isVisible ? <Unlock className="w-5 h-5"/> : <Lock className="w-5 h-5"/>}</button><button onClick={() => deleteDoc(doc(db, 'artifacts', PORTAL_ID, 'public', 'data', 'materials', m.id))} className="p-4 bg-red-50 text-red-500 rounded-xl"><Trash2 className="w-5 h-5"/></button></div></div>)}</div></div>;
       case 'admin-tasks-list': return <div className="p-10 bg-slate-50 min-h-screen text-center flex flex-col items-center"><button onClick={() => setView('admin')} className="mb-10 text-slate-400 font-black uppercase text-xs flex items-center gap-2 self-start"><ArrowLeft className="w-4 h-4" /> Назад</button><button onClick={() => setView('setup-tasks')} className="mb-6 w-full max-w-4xl bg-slate-900 text-white py-6 rounded-2xl font-black uppercase text-xs">Добавить задачи</button><div className="grid gap-4 max-w-4xl w-full">{taskSections.map(s => <div key={s.id} className="bg-white p-6 rounded-2xl shadow flex justify-between items-center text-left"><h4 className="font-black text-slate-900 uppercase text-left">{s.title}</h4><div className="flex gap-4"><button onClick={() => updateDoc(doc(db, 'artifacts', PORTAL_ID, 'public', 'data', 'task_sections', s.id), {isVisible: !s.isVisible})} className={`p-4 rounded-xl ${s.isVisible ? 'bg-blue-500 text-white' : 'bg-slate-100 text-slate-400'}`}>{s.isVisible ? <Unlock className="w-5 h-5"/> : <Lock className="w-5 h-5"/>}</button><button onClick={() => deleteDoc(doc(db, 'artifacts', PORTAL_ID, 'public', 'data', 'task_sections', s.id))} className="p-4 bg-red-50 text-red-500 rounded-xl"><Trash2 className="w-5 h-5"/></button></div></div>)}</div></div>;
       case 'setup-tasks': return <div className="min-h-screen bg-slate-950 flex items-center justify-center p-4"><div className="max-w-4xl w-full bg-white p-10 rounded-[3rem] text-center flex flex-col items-center"><button onClick={() => setView('admin-tasks-list')} className="mb-8 text-slate-400 font-black uppercase text-xs flex items-center gap-2 self-start"><ArrowLeft className="w-4 h-4" /> Назад</button><h2 className="text-3xl font-black uppercase mb-6">Новые задачи</h2><input value={inputTitle} onChange={e => setInputTitle(e.target.value)} className="w-full p-6 bg-slate-50 rounded-2xl mb-4 font-bold text-center" placeholder="Название темы" /><textarea value={inputText} onChange={e => setInputText(e.target.value)} className="w-full h-64 p-6 bg-slate-50 rounded-2xl mb-6 font-bold text-left" placeholder="Задача [ТЕКСТ] Ответ [ЭТАЛОН]..." /><button onClick={handleSaveTasks} className="w-full bg-blue-600 text-white py-6 rounded-2xl font-black uppercase">Загрузить</button></div></div>;
