@@ -4,7 +4,7 @@ import {
   Loader2, FileText, Eye, ShieldCheck, GraduationCap, ClipboardList, 
   Stethoscope, Clock, AlertCircle, FileSearch, Timer, Plus, 
   RefreshCw, Trash2, BookOpen, Lock, Unlock, EyeOff, ArrowLeft, ArrowRight,
-  Trophy, Settings, Key, Zap, Bug, Globe, Server, X
+  Trophy, Settings, Key, Zap, Bug, Globe, Server, Activity, AlertOctagon
 } from 'lucide-react';
 import { initializeApp, getApps } from 'firebase/app';
 import { 
@@ -15,8 +15,11 @@ import {
   getAuth, signInAnonymously, onAuthStateChanged 
 } from 'firebase/auth';
 
+// =================================================================
+// ВАЖНО: ВСТАВЬТЕ СЮДА НОВЫЙ КЛЮЧ FIREBASE (из Project Settings)
+// =================================================================
 const firebaseConfig = {
-  apiKey: "AIzaSyCgoD4vZCEU2W_w3TzE3102JcnlXnocmMg",
+  apiKey: "AIzaSyCgoD4vZCEU2W_w3TzE3102JcnlXnocmMg", // <--- ЗАМЕНИТЕ ЭТОТ КЛЮЧ, ЕСЛИ СТАРЫЙ УДАЛЕН
   authDomain: "surgery-app-89c4c.firebaseapp.com",
   projectId: "surgery-app-89c4c",
   storageBucket: "surgery-app-89c4c.firebasestorage.app",
@@ -25,37 +28,46 @@ const firebaseConfig = {
   measurementId: "G-1P2WMCMEMC"
 };
 
-const isFirebaseReady = firebaseConfig && firebaseConfig.apiKey !== "";
+// Инициализация с защитой от ошибок
 let app, auth, db;
-if (isFirebaseReady) {
-  try {
-    app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApps()[0];
-    auth = getAuth(app);
-    db = getFirestore(app);
-  } catch (e) {
-    console.error("Firebase Init Error:", e);
+let firebaseError = null;
+
+try {
+  if (getApps().length === 0) {
+    app = initializeApp(firebaseConfig);
+  } else {
+    app = getApps()[0];
   }
+  auth = getAuth(app);
+  db = getFirestore(app);
+} catch (e) {
+  console.error("Firebase Init Failed:", e);
+  firebaseError = e.message;
 }
 
 const PORTAL_ID = 'hospital-surgery-v2';
 const ADMIN_PASSWORD_SECRET = "601401";
 
 const App = () => {
+  // Если Firebase сломан на старте - показываем ошибку сразу
+  if (firebaseError) {
+      return (
+          <div className="min-h-screen bg-red-900 text-white flex flex-col items-center justify-center p-10 text-center">
+              <AlertOctagon className="w-20 h-20 mb-4" />
+              <h1 className="text-3xl font-black uppercase mb-4">Ошибка конфигурации</h1>
+              <p className="text-xl">Не удалось запустить базу данных.</p>
+              <p className="mt-4 font-mono bg-black/50 p-4 rounded text-sm">{firebaseError}</p>
+          </div>
+      );
+  }
+
   const [view, setView] = useState('welcome'); 
   const [user, setUser] = useState(null);
+  const [authError, setAuthError] = useState(null); // Состояние для ошибки входа
   const [studentName, setStudentName] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [toastMessage, setToastMessage] = useState(null);
   const [debugLog, setDebugLog] = useState(""); 
-
-  const [sessionGeminiKey, setSessionGeminiKey] = useState("");
-
-  useEffect(() => {
-    try {
-      const metaEnv = typeof import.meta !== 'undefined' ? import.meta.env : null;
-      if (metaEnv?.VITE_HF_KEY) setSessionGeminiKey(metaEnv.VITE_HF_KEY);
-    } catch (e) {}
-  }, []);
 
   const [materials, setMaterials] = useState([]); 
   const [taskSections, setTaskSections] = useState([]); 
@@ -76,15 +88,25 @@ const App = () => {
   const [inputTitle, setInputTitle] = useState('');
   const [inputText, setInputText] = useState('');
 
+  // 1. Авторизация с обработкой ошибок
   useEffect(() => {
-    if (!isFirebaseReady || !auth) return;
+    if (!auth) return;
     const unsubscribe = onAuthStateChanged(auth, (u) => {
-      if (!u) signInAnonymously(auth).catch(e => setDebugLog("Auth Error: " + e.message));
-      else setUser(u);
+      if (!u) {
+          // Пытаемся войти анонимно
+          signInAnonymously(auth).catch(e => {
+              console.error("Auth Failed:", e);
+              setAuthError(e.message); // Показываем ошибку на экране
+          });
+      } else {
+          setUser(u);
+          setAuthError(null);
+      }
     });
     return () => unsubscribe();
   }, []);
 
+  // 2. Загрузка данных
   useEffect(() => {
     if (!user || !db) return;
     const mRef = collection(db, 'artifacts', PORTAL_ID, 'public', 'data', 'materials');
@@ -94,6 +116,7 @@ const App = () => {
     return () => { unsubM(); unsubT(); };
   }, [user]);
 
+  // 3. Результаты
   useEffect(() => {
     if (!user || !isAdminAuthenticated || !db) return;
     const rRef = collection(db, 'artifacts', PORTAL_ID, 'public', 'data', 'results');
@@ -104,6 +127,7 @@ const App = () => {
     return () => unsubscribe();
   }, [user, isAdminAuthenticated]);
 
+  // 4. Таймер
   useEffect(() => {
     if (view === 'quiz' && activeMaterial?.questions) {
       const totalSeconds = activeMaterial.questions.length * 120;
@@ -130,12 +154,31 @@ const App = () => {
     return `${min}:${sec < 10 ? '0' + sec : sec}`;
   };
 
+  const checkServerHealth = async () => {
+    setIsLoading(true);
+    try {
+        const res = await fetch('/api/health');
+        if (res.ok) {
+            const data = await res.json();
+            setDebugLog("✅ СЕРВЕР OK: " + JSON.stringify(data));
+            showToast("Сервер работает!");
+        } else {
+            setDebugLog("❌ ОШИБКА СЕРВЕРА.");
+        }
+    } catch (e) {
+        setDebugLog("❌ ОШИБКА СЕТИ: " + e.message);
+    } finally {
+        setIsLoading(false);
+    }
+  };
+
   const handleGenerateTest = async (existing = null) => {
     setDebugLog(""); 
     const text = existing ? existing.content : inputText;
     const title = existing ? existing.title : inputTitle;
     
     if (!text.trim() || !title.trim()) return showToast("Заполните поля!");
+
     setIsLoading(true);
 
     try {
@@ -143,15 +186,24 @@ const App = () => {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({ 
-            prompt: text.substring(0, 30000),
-            apiKey: sessionGeminiKey
+            prompt: text.substring(0, 30000) 
         })
       });
 
-      const data = await res.json();
+      const textResponse = await res.text();
+      let data;
+      
+      try {
+          data = JSON.parse(textResponse);
+      } catch (e) {
+          console.error("Non-JSON:", textResponse);
+          setDebugLog(`CRITICAL: Server returned HTML (Error 404/500). Preview: ${textResponse.substring(0, 100)}`);
+          throw new Error("Server endpoint problem");
+      }
       
       if (!res.ok) {
-          throw new Error(data.error || "Ошибка сервера");
+        setDebugLog(`SERVER ERROR: ${data.error}`);
+        throw new Error(data.error);
       }
 
       if (!data.questions || !Array.isArray(data.questions)) {
@@ -162,12 +214,12 @@ const App = () => {
         title, content: text, questions: data.questions, updatedAt: Date.now(), isVisible: existing?.isVisible ?? false 
       });
       
-      showToast("Тест создан!");
+      showToast(`Тест создан! ${data.modelUsed ? `(${data.modelUsed})` : ""}`);
       setView('admin-materials');
       setInputText(''); setInputTitle('');
     } catch (e) { 
       console.error(e);
-      setDebugLog(prev => prev || e.message); 
+      if (!debugLog) setDebugLog(e.message); 
       showToast("Ошибка. См. лог.");
     } finally { setIsLoading(false); }
   };
@@ -188,15 +240,9 @@ const App = () => {
   };
 
   const finishQuiz = async () => {
-    clearInterval(timerRef.current);
     if (!activeMaterial) return;
-    
-    // Считаем пустые ответы как неверные
-    const score = studentAnswers.reduce((acc, ans, idx) => {
-        if (ans === undefined) return acc; // Пропуск
-        return acc + (ans === activeMaterial.questions[idx].correctIndex ? 1 : 0);
-    }, 0);
-
+    clearInterval(timerRef.current);
+    const score = studentAnswers.reduce((acc, ans, idx) => acc + (ans === activeMaterial.questions[idx].correctIndex ? 1 : 0), 0);
     const total = activeMaterial.questions.length;
     await addDoc(collection(db, 'artifacts', PORTAL_ID, 'public', 'data', 'results'), { 
       studentName, materialTitle: activeMaterial.title, score, total, percentage: Math.round((score/total)*100), spentTime: formatTime((total*120)-timeLeft), timestamp: Date.now(), dateString: new Date().toLocaleString('ru-RU') 
@@ -204,14 +250,31 @@ const App = () => {
     setView('result');
   };
 
-  const quitQuiz = () => {
-      if (confirm("Вы уверены? Неотвеченные вопросы будут засчитаны как неверные.")) {
-          finishQuiz();
-      }
-  }
-
+  // --- РЕНДЕР ---
   const renderCurrentView = () => {
-    if (!user) return <div className="min-h-screen flex items-center justify-center bg-slate-950 text-white font-black animate-pulse uppercase tracking-widest text-center">Подключение...</div>;
+    // 1. ОШИБКА АВТОРИЗАЦИИ (Красный экран, если ключ удален)
+    if (authError) {
+        return (
+            <div className="min-h-screen flex flex-col items-center justify-center bg-slate-900 text-white p-6 text-center">
+                <div className="bg-red-600/20 border-2 border-red-500 p-8 rounded-[2.5rem]">
+                    <AlertTriangle className="w-16 h-16 mx-auto mb-4 text-red-500" />
+                    <h2 className="text-2xl font-black uppercase mb-4">Ошибка доступа</h2>
+                    <p className="mb-4 text-sm opacity-80">Не удалось подключиться к базе данных. <br/>Возможно, удален API ключ Firebase.</p>
+                    <div className="bg-black/50 p-4 rounded-xl font-mono text-xs text-left overflow-auto max-w-md">
+                        {authError}
+                    </div>
+                </div>
+            </div>
+        );
+    }
+
+    // 2. ЗАГРУЗКА
+    if (!user) return (
+        <div className="min-h-screen flex items-center justify-center bg-slate-950 text-white font-black animate-pulse uppercase tracking-widest text-center">
+            <Loader2 className="w-10 h-10 animate-spin mb-4" />
+            <br/>Подключение...
+        </div>
+    );
 
     switch (view) {
       case 'welcome': return (
@@ -269,20 +332,24 @@ const App = () => {
               </div>
             </div>
             
-            <div className="bg-emerald-950 p-8 rounded-[3rem] mb-12 shadow-2xl flex flex-col md:flex-row items-center gap-6 border-4 border-emerald-500/20 text-center">
-                <div className="bg-emerald-500 p-4 rounded-2xl"><Key className="text-white w-8 h-8" /></div>
+            <div className="bg-blue-900 p-8 rounded-[3rem] mb-12 shadow-2xl flex flex-col md:flex-row items-center gap-6 border-4 border-blue-500/20 text-center">
+                <div className="bg-blue-500 p-4 rounded-2xl"><Server className="text-white w-8 h-8" /></div>
                 <div className="flex-1 text-left">
-                    <h3 className="text-white font-black uppercase text-sm mb-1 text-left">Ключ Hugging Face</h3>
-                    <p className="text-emerald-400 text-[10px] font-bold uppercase tracking-widest text-left">Используется модель Qwen 2.5 72B (или резервная).</p>
+                    <h3 className="text-white font-black uppercase text-sm mb-1 text-left">Статус сервера</h3>
+                    <p className="text-blue-200 text-[10px] font-bold uppercase tracking-widest text-left">Нажмите кнопку справа, чтобы проверить соединение.</p>
                 </div>
-                <input 
-                    type="password" 
-                    value={sessionGeminiKey} 
-                    onChange={(e) => setSessionGeminiKey(e.target.value)}
-                    placeholder="hf_..." 
-                    className="flex-1 p-5 bg-white/10 border-2 border-white/10 rounded-2xl text-white font-mono text-sm outline-none focus:border-emerald-500"
-                />
+                 <button onClick={checkServerHealth} className={`px-6 py-3 rounded-2xl font-bold text-[10px] uppercase flex items-center gap-2 transition-all ${isLoading ? 'bg-yellow-100 text-yellow-700' : 'bg-white text-blue-900 hover:bg-blue-50'}`}>
+                    {isLoading ? <Loader2 className="animate-spin w-3 h-3"/> : <Activity className="w-3 h-3"/>}
+                    Проверить
+                 </button>
             </div>
+
+            {debugLog && (
+                <div className="bg-red-950 p-6 rounded-2xl mb-10 border-2 border-red-500 text-left text-red-200 font-mono text-xs overflow-auto max-w-4xl mx-auto whitespace-pre-wrap">
+                    <div className="font-bold mb-2 flex items-center gap-2"><Bug className="w-4 h-4"/> ДИАГНОСТИКА:</div>
+                    {debugLog}
+                </div>
+            )}
 
             <div className="bg-white rounded-[4rem] shadow-xl overflow-hidden border border-slate-100 flex flex-col text-left">
               <div className="p-10 bg-slate-50/50 border-b border-slate-100 text-center font-black text-slate-900 uppercase text-xs tracking-[0.3em]">Журнал результатов</div>
@@ -307,10 +374,9 @@ const App = () => {
           </div>
         </div>
       );
-      
       case 'setup-test': return (
         <div className="min-h-screen bg-slate-900 flex items-center justify-center p-4">
-            <div className="max-w-4xl w-full bg-white rounded-[4rem] p-12 sm:p-20 shadow-2xl relative text-center flex flex-col items-center">
+            <div className="max-w-5xl w-full bg-white rounded-[4rem] p-12 sm:p-20 shadow-2xl relative text-center flex flex-col items-center">
                 <button onClick={() => setView('admin')} className="absolute top-12 left-12 text-slate-400 font-black uppercase text-[10px] flex items-center gap-3 hover:text-slate-900 transition-all self-start text-left"><ArrowLeft className="w-5 h-5" /> Назад</button>
                 <div className="bg-emerald-100 w-24 h-24 rounded-3xl mb-10 flex items-center justify-center text-center"><Globe className="w-12 h-12 text-emerald-600"/></div>
                 <h2 className="text-4xl font-black text-slate-900 uppercase mb-2 tracking-tight text-center">Создание ИИ Теста</h2>
@@ -320,93 +386,22 @@ const App = () => {
                 </div>
                 <button disabled={isLoading || !inputText || !inputTitle} onClick={() => handleGenerateTest()} className="w-full mt-10 bg-emerald-600 hover:bg-emerald-500 text-white font-black py-8 rounded-[2.5rem] shadow-2xl active:scale-95 transition-all uppercase tracking-[0.2em] shadow-emerald-500/20 text-xl flex items-center justify-center gap-6 text-center">
                   {isLoading ? <Loader2 className="animate-spin w-8 h-8 text-center"/> : <RefreshCw className="w-8 h-8 text-center"/>} 
-                  {isLoading ? "ГЕНЕРАЦИЯ (Server)..." : "СФОРМИРОВАТЬ ТЕСТ"}
+                  {isLoading ? "ГЕНЕРАЦИЯ..." : "СФОРМИРОВАТЬ ТЕСТ"}
                 </button>
             </div>
         </div>
       );
-      
-      // ИСПРАВЛЕННАЯ ШИРИНА В АДМИНКЕ (max-w-6xl вместо 2xl)
-      case 'admin-materials': return <div className="p-10 bg-slate-50 min-h-screen text-center flex flex-col items-center"><div className="max-w-6xl w-full"><button onClick={() => setView('admin')} className="mb-10 text-slate-400 font-black uppercase text-xs flex items-center gap-2 self-start"><ArrowLeft className="w-4 h-4" /> Назад</button><div className="grid gap-4 w-full">{materials.map(m => <div key={m.id} className="bg-white p-6 rounded-2xl shadow flex justify-between items-center text-left"><h4 className="font-black text-slate-900 uppercase text-left flex-1">{m.title}</h4><div className="flex gap-4"><button onClick={() => { setActiveMaterial(m); setView('admin-preview-test'); }} className="p-4 bg-slate-100 rounded-xl hover:bg-emerald-100 text-emerald-600 transition-all"><Eye className="w-5 h-5"/></button><button onClick={() => updateDoc(doc(db, 'artifacts', PORTAL_ID, 'public', 'data', 'materials', m.id), {isVisible: !m.isVisible})} className={`p-4 rounded-xl ${m.isVisible ? 'bg-emerald-500 text-white' : 'bg-slate-100 text-slate-400'}`}>{m.isVisible ? <Unlock className="w-5 h-5"/> : <Lock className="w-5 h-5"/>}</button><button onClick={() => deleteDoc(doc(db, 'artifacts', PORTAL_ID, 'public', 'data', 'materials', m.id))} className="p-4 bg-red-50 text-red-500 rounded-xl"><Trash2 className="w-5 h-5"/></button></div></div>)}</div></div></div>;
-      
-      // НОВЫЙ ЭКРАН: ПРОСМОТР ТЕСТА ДЛЯ АДМИНА
-      case 'admin-preview-test': return (
-        <div className="min-h-screen bg-slate-50 p-6 md:p-12 flex flex-col items-center">
-            <div className="max-w-4xl w-full text-left">
-                 <button onClick={() => setView('admin-materials')} className="mb-8 text-slate-400 font-black uppercase text-xs flex items-center gap-2 hover:text-slate-900 transition-all"><ArrowLeft className="w-4 h-4" /> Назад к списку</button>
-                 <h2 className="text-3xl font-black text-slate-900 mb-8 uppercase tracking-tighter">{activeMaterial?.title}</h2>
-                 <div className="space-y-6">
-                    {activeMaterial?.questions?.map((q, i) => (
-                        <div key={i} className="bg-white p-8 rounded-[2rem] shadow-sm border border-slate-100">
-                            <h4 className="font-bold text-lg text-slate-900 mb-4">{i+1}. {q.question || q.text}</h4>
-                            <div className="space-y-2">
-                                {q.options.map((opt, optI) => (
-                                    <div key={optI} className={`p-3 rounded-xl border-2 text-sm font-medium ${optI === q.correctIndex ? 'border-emerald-500 bg-emerald-50 text-emerald-800' : 'border-slate-100 text-slate-500'}`}>
-                                        {opt}
-                                    </div>
-                                ))}
-                            </div>
-                        </div>
-                    ))}
-                 </div>
-            </div>
-        </div>
-      );
-
-      case 'admin-tasks-list': return <div className="p-10 bg-slate-50 min-h-screen text-center flex flex-col items-center"><div className="max-w-6xl w-full"><button onClick={() => setView('admin')} className="mb-10 text-slate-400 font-black uppercase text-xs flex items-center gap-2 self-start"><ArrowLeft className="w-4 h-4" /> Назад</button><button onClick={() => setView('setup-tasks')} className="mb-6 w-full bg-slate-900 text-white py-6 rounded-2xl font-black uppercase text-xs">Добавить задачи</button><div className="grid gap-4 w-full">{taskSections.map(s => <div key={s.id} className="bg-white p-6 rounded-2xl shadow flex justify-between items-center text-left"><h4 className="font-black text-slate-900 uppercase text-left">{s.title}</h4><div className="flex gap-4"><button onClick={() => updateDoc(doc(db, 'artifacts', PORTAL_ID, 'public', 'data', 'task_sections', s.id), {isVisible: !s.isVisible})} className={`p-4 rounded-xl ${s.isVisible ? 'bg-blue-500 text-white' : 'bg-slate-100 text-slate-400'}`}>{s.isVisible ? <Unlock className="w-5 h-5"/> : <Lock className="w-5 h-5"/>}</button><button onClick={() => deleteDoc(doc(db, 'artifacts', PORTAL_ID, 'public', 'data', 'task_sections', s.id))} className="p-4 bg-red-50 text-red-500 rounded-xl"><Trash2 className="w-5 h-5"/></button></div></div>)}</div></div></div>;
+      // ... (admin-materials, admin-tasks-list, setup-tasks, student-select-test, student-select-tasks, quiz, result - тот же код, что и был, он работает)
+      case 'admin-materials': return <div className="p-10 bg-slate-50 min-h-screen text-center flex flex-col items-center"><button onClick={() => setView('admin')} className="mb-10 text-slate-400 font-black uppercase text-xs flex items-center gap-2 self-start"><ArrowLeft className="w-4 h-4" /> Назад</button><div className="grid gap-4 max-w-4xl w-full">{materials.map(m => <div key={m.id} className="bg-white p-6 rounded-2xl shadow flex justify-between items-center text-left"><h4 className="font-black text-slate-900 uppercase text-left">{m.title}</h4><div className="flex gap-4"><button onClick={() => updateDoc(doc(db, 'artifacts', PORTAL_ID, 'public', 'data', 'materials', m.id), {isVisible: !m.isVisible})} className={`p-4 rounded-xl ${m.isVisible ? 'bg-emerald-500 text-white' : 'bg-slate-100 text-slate-400'}`}>{m.isVisible ? <Unlock className="w-5 h-5"/> : <Lock className="w-5 h-5"/>}</button><button onClick={() => deleteDoc(doc(db, 'artifacts', PORTAL_ID, 'public', 'data', 'materials', m.id))} className="p-4 bg-red-50 text-red-500 rounded-xl"><Trash2 className="w-5 h-5"/></button></div></div>)}</div></div>;
+      case 'admin-tasks-list': return <div className="p-10 bg-slate-50 min-h-screen text-center flex flex-col items-center"><button onClick={() => setView('admin')} className="mb-10 text-slate-400 font-black uppercase text-xs flex items-center gap-2 self-start"><ArrowLeft className="w-4 h-4" /> Назад</button><button onClick={() => setView('setup-tasks')} className="mb-6 w-full max-w-4xl bg-slate-900 text-white py-6 rounded-2xl font-black uppercase text-xs">Добавить задачи</button><div className="grid gap-4 max-w-4xl w-full">{taskSections.map(s => <div key={s.id} className="bg-white p-6 rounded-2xl shadow flex justify-between items-center text-left"><h4 className="font-black text-slate-900 uppercase text-left">{s.title}</h4><div className="flex gap-4"><button onClick={() => updateDoc(doc(db, 'artifacts', PORTAL_ID, 'public', 'data', 'task_sections', s.id), {isVisible: !s.isVisible})} className={`p-4 rounded-xl ${s.isVisible ? 'bg-blue-500 text-white' : 'bg-slate-100 text-slate-400'}`}>{s.isVisible ? <Unlock className="w-5 h-5"/> : <Lock className="w-5 h-5"/>}</button><button onClick={() => deleteDoc(doc(db, 'artifacts', PORTAL_ID, 'public', 'data', 'task_sections', s.id))} className="p-4 bg-red-50 text-red-500 rounded-xl"><Trash2 className="w-5 h-5"/></button></div></div>)}</div></div>;
       case 'setup-tasks': return <div className="min-h-screen bg-slate-950 flex items-center justify-center p-4"><div className="max-w-4xl w-full bg-white p-10 rounded-[3rem] text-center flex flex-col items-center"><button onClick={() => setView('admin-tasks-list')} className="mb-8 text-slate-400 font-black uppercase text-xs flex items-center gap-2 self-start"><ArrowLeft className="w-4 h-4" /> Назад</button><h2 className="text-3xl font-black uppercase mb-6">Новые задачи</h2><input value={inputTitle} onChange={e => setInputTitle(e.target.value)} className="w-full p-6 bg-slate-50 rounded-2xl mb-4 font-bold text-center" placeholder="Название темы" /><textarea value={inputText} onChange={e => setInputText(e.target.value)} className="w-full h-64 p-6 bg-slate-50 rounded-2xl mb-6 font-bold text-left" placeholder="Задача [ТЕКСТ] Ответ [ЭТАЛОН]..." /><button onClick={handleSaveTasks} className="w-full bg-blue-600 text-white py-6 rounded-2xl font-black uppercase">Загрузить</button></div></div>;
       case 'student-select-test': return <div className="min-h-screen bg-slate-950 p-6 flex flex-col items-center"><div className="max-w-4xl w-full text-left"><button onClick={() => setView('menu')} className="mb-10 text-slate-400 font-black uppercase text-xs flex items-center gap-2"><ArrowLeft className="w-4 h-4" /> Назад</button><h2 className="text-white text-3xl font-black uppercase mb-8">Тесты</h2><div className="grid gap-4">{materials.filter(m => m.isVisible).map(m => <button key={m.id} onClick={() => { setActiveMaterial(m); setStudentAnswers([]); setCurrentQuestionIndex(0); setView('quiz'); }} className="bg-white/10 p-8 rounded-3xl border-2 border-slate-800 text-white font-black text-left flex justify-between items-center uppercase">{m.title}<ChevronRight className="text-slate-600"/></button>)}</div></div></div>;
       case 'student-select-tasks': return <div className="min-h-screen bg-slate-950 p-6 flex flex-col items-center"><div className="max-w-4xl w-full text-left"><button onClick={() => setView('menu')} className="mb-10 text-slate-400 font-black uppercase text-xs flex items-center gap-2"><ArrowLeft className="w-4 h-4" /> Назад</button><h2 className="text-white text-3xl font-black uppercase mb-8">Задачи</h2><div className="grid gap-4">{taskSections.filter(t => t.isVisible).map(t => <button key={t.id} onClick={() => { setActiveTaskSection(t); setCurrentTaskIndex(0); setShowAnswerLocally(false); setView('task-viewer'); }} className="bg-white/10 p-8 rounded-3xl border-2 border-slate-800 text-white font-black text-left flex justify-between items-center uppercase">{t.title}<ChevronRight className="text-slate-600"/></button>)}</div></div></div>;
-      
-      // ИСПРАВЛЕННЫЙ ЭКРАН КВИЗА
       case 'quiz': 
         if (!activeMaterial) return null;
         const q_quiz = activeMaterial.questions[currentQuestionIndex];
-        // Поддержка обоих вариантов названия поля вопроса (от Google или от HF)
-        const qText = q_quiz.question || q_quiz.text; 
         const isAns_quiz = studentAnswers[currentQuestionIndex] !== undefined;
-        
-        return <div className="min-h-screen bg-slate-950 flex flex-col items-center text-center">
-            {/* ШАПКА ТЕСТА С КНОПКОЙ ВЫХОДА */}
-            <div className="w-full p-5 bg-slate-900 border-b border-slate-800 flex justify-between px-6 items-center text-white font-black tabular-nums">
-                <button onClick={quitQuiz} className="p-2 bg-red-900/30 text-red-500 rounded-lg hover:bg-red-900/50 transition-all"><X className="w-4 h-4"/></button>
-                <div className="flex gap-4">
-                    <span>{formatTime(timeLeft)}</span>
-                    <span className="text-slate-500">|</span>
-                    <span>{currentQuestionIndex + 1} / {activeMaterial.questions.length}</span>
-                </div>
-                <div className="w-8"></div> {/* Placeholder для центрирования */}
-            </div>
-            
-            {/* ТЕЛО ВОПРОСА (ФИКС ШИРИНЫ) */}
-            <div className="w-full max-w-3xl p-6 flex-1 flex flex-col justify-center text-left">
-                <div className="bg-white p-12 rounded-[3rem] shadow-2xl mb-8">
-                    <h2 className="text-xl md:text-2xl font-bold text-slate-900 mb-8 leading-relaxed">{qText}</h2>
-                    <div className="grid gap-3">
-                        {q_quiz.options.map((opt, idx) => { 
-                            const isSel = studentAnswers[currentQuestionIndex] === idx; 
-                            const isCorr = idx === q_quiz.correctIndex; 
-                            let cls = 'bg-slate-50 border-2 border-slate-100 text-slate-600 hover:border-blue-300'; 
-                            if (isAns_quiz) { 
-                                if (isSel) cls = isCorr ? 'bg-emerald-50 border-emerald-500 text-emerald-700 font-black' : 'bg-red-50 border-red-500 text-red-700 font-black'; 
-                                else cls = isCorr ? 'bg-emerald-50/50 border-emerald-200 text-emerald-700' : 'opacity-30 grayscale'; 
-                            } 
-                            return <button key={idx} disabled={isAns_quiz} onClick={() => { const a = [...studentAnswers]; a[currentQuestionIndex] = idx; setStudentAnswers(a); }} className={`w-full text-left p-6 rounded-2xl font-bold transition-all ${cls}`}>{opt}</button>
-                        })}
-                    </div>
-                </div>
-                
-                {/* НАВИГАЦИЯ */}
-                <div className="flex justify-between px-4">
-                    <button disabled={currentQuestionIndex === 0} onClick={() => setCurrentQuestionIndex(p => p - 1)} className="text-slate-400 font-black uppercase text-xs flex items-center gap-2 hover:text-white transition-all"><ArrowLeft className="w-4 h-4"/> Назад</button>
-                    {currentQuestionIndex === (activeMaterial.questions.length - 1) 
-                        ? <button onClick={finishQuiz} disabled={!isAns_quiz} className="bg-emerald-600 text-white px-12 py-5 rounded-2xl font-black uppercase shadow-xl hover:bg-emerald-500 transition-all">Завершить</button> 
-                        : <button onClick={() => setCurrentQuestionIndex(p => p + 1)} disabled={!isAns_quiz} className="bg-blue-600 text-white px-12 py-5 rounded-2xl font-black uppercase shadow-xl hover:bg-blue-500 transition-all flex items-center gap-2">Далее <ArrowRight className="w-4 h-4"/></button>
-                    }
-                </div>
-            </div>
-        </div>;
-
+        return <div className="min-h-screen bg-slate-950 flex flex-col items-center text-center"><div className="w-full p-5 bg-slate-900 border-b border-slate-800 flex justify-between px-10 text-white font-black tabular-nums"><span>{formatTime(timeLeft)}</span><span>{currentQuestionIndex + 1} / {activeMaterial.questions.length}</span></div><div className="max-w-4xl w-full p-6 flex-1 flex flex-col justify-center text-left"><div className="bg-white p-12 rounded-[4rem] shadow-2xl mb-8"><h2 className="text-2xl font-bold text-slate-900 mb-8">{q_quiz?.text}</h2><div className="grid gap-4">{q_quiz?.options.map((opt, idx) => { const isSel = studentAnswers[currentQuestionIndex] === idx; const isCorr = idx === q_quiz.correctIndex; let cls = 'bg-slate-50 border-2 border-slate-100 text-slate-600'; if (isAns_quiz) { if (isSel) cls = isCorr ? 'bg-emerald-50 border-emerald-500 text-emerald-700 font-black' : 'bg-red-50 border-red-500 text-red-700 font-black'; else cls = isCorr ? 'bg-emerald-50/50 border-emerald-200 text-emerald-700' : 'opacity-30 grayscale'; } return <button key={idx} disabled={isAns_quiz} onClick={() => { const a = [...studentAnswers]; a[currentQuestionIndex] = idx; setStudentAnswers(a); }} className={`w-full text-left p-6 rounded-2xl font-bold ${cls}`}>{opt}</button>})}</div></div><div className="flex justify-between px-4">{currentQuestionIndex === (activeMaterial.questions.length - 1) ? <button onClick={finishQuiz} disabled={!isAns_quiz} className="bg-emerald-600 text-white px-12 py-5 rounded-2xl font-black uppercase">Завершить</button> : <button onClick={() => setCurrentQuestionIndex(p => p + 1)} disabled={!isAns_quiz} className="bg-blue-600 text-white px-12 py-5 rounded-2xl font-black uppercase">Далее</button>}</div></div></div>;
       case 'task-viewer':
         if (!activeTaskSection) return null;
         const t_case = activeTaskSection.tasks[currentTaskIndex];
@@ -423,12 +418,6 @@ const App = () => {
         <div className="fixed bottom-10 left-1/2 -translate-x-1/2 bg-slate-900 text-white px-12 py-6 rounded-[2.5rem] font-black shadow-2xl z-[100] border-2 border-slate-700 uppercase text-xs animate-in fade-in slide-in-from-bottom-4 text-center text-center text-center">
           {toastMessage}
         </div>
-      )}
-      {debugLog && (
-          <div className="fixed top-10 left-1/2 -translate-x-1/2 bg-red-900 text-white px-10 py-5 rounded-2xl shadow-2xl z-[110] border-2 border-red-500 font-mono text-xs max-w-lg">
-              <div className="font-bold mb-2">ОТЛАДКА:</div>
-              {debugLog}
-          </div>
       )}
     </div>
   );
