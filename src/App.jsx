@@ -126,7 +126,7 @@ const App = () => {
   // 4. Таймер
   useEffect(() => {
     if (view === 'quiz' && activeMaterial?.questions) {
-      const totalSeconds = activeMaterial.questions.length * 120;
+      const totalSeconds = activeMaterial.timerMinutes ? activeMaterial.timerMinutes * 60 : activeMaterial.questions.length * 120;
       setTimeLeft(totalSeconds);
       if (timerRef.current) clearInterval(timerRef.current);
       timerRef.current = setInterval(() => {
@@ -453,7 +453,7 @@ const App = () => {
         </div>
       );
       
-      case 'admin-materials': return <div className="p-10 bg-slate-50 min-h-screen text-center flex flex-col items-center"><div className="max-w-6xl w-full"><button onClick={() => setView('admin')} className="mb-10 text-slate-400 font-black uppercase text-xs flex items-center gap-2 self-start"><ArrowLeft className="w-4 h-4" /> Назад</button><div className="grid gap-4 w-full">{materials.map(m => <div key={m.id} className="bg-white p-6 rounded-2xl shadow flex justify-between items-center text-left"><h4 className="font-black text-slate-900 uppercase text-left flex-1">{m.title}</h4><div className="flex gap-4"><button onClick={() => { setActiveMaterial(m); setView('admin-preview-test'); }} className="p-4 bg-slate-100 rounded-xl hover:bg-emerald-100 text-emerald-600 transition-all"><Eye className="w-5 h-5"/></button><button onClick={() => updateDoc(doc(db, 'artifacts', PORTAL_ID, 'public', 'data', 'materials', m.id), {isVisible: !m.isVisible})} className={`p-4 rounded-xl ${m.isVisible ? 'bg-emerald-500 text-white' : 'bg-slate-100 text-slate-400'}`}>{m.isVisible ? <Unlock className="w-5 h-5"/> : <Lock className="w-5 h-5"/>}</button><button onClick={() => deleteDoc(doc(db, 'artifacts', PORTAL_ID, 'public', 'data', 'materials', m.id))} className="p-4 bg-red-50 text-red-500 rounded-xl"><Trash2 className="w-5 h-5"/></button></div></div>)}</div></div></div>;
+      case 'admin-materials': return <div className="p-10 bg-slate-50 min-h-screen text-center flex flex-col items-center"><div className="max-w-6xl w-full"><button onClick={() => setView('admin')} className="mb-10 text-slate-400 font-black uppercase text-xs flex items-center gap-2 self-start"><ArrowLeft className="w-4 h-4" /> Назад</button><div className="grid gap-4 w-full">{materials.map(m => <div key={m.id} className="bg-white p-6 rounded-2xl shadow flex justify-between items-center text-left"><h4 className="font-black text-slate-900 uppercase text-left flex-1">{m.title} {m.timerMinutes ? <span className="text-xs ml-3 text-slate-400 font-bold bg-slate-100 px-3 py-1 rounded-xl">⏱ {m.timerMinutes} мин</span> : null}</h4><div className="flex gap-4"><button onClick={() => { setActiveMaterial(m); setView('admin-preview-test'); }} className="p-4 bg-slate-100 rounded-xl hover:bg-emerald-100 text-emerald-600 transition-all"><Eye className="w-5 h-5"/></button><button onClick={() => { const t = prompt("Время на тест в минутах (0 - авто):", m.timerMinutes || Math.round((m.questions?.length * 120)/60) || 0); if (t !== null && !isNaN(t) && t !== "") { updateDoc(doc(db, 'artifacts', PORTAL_ID, 'public', 'data', 'materials', m.id), { timerMinutes: Number(t) }); showToast("Таймер обновлен!"); } }} className="p-4 bg-slate-100 rounded-xl hover:bg-orange-100 text-orange-500 transition-all" title="Настроить таймер"><Timer className="w-5 h-5"/></button><button onClick={() => updateDoc(doc(db, 'artifacts', PORTAL_ID, 'public', 'data', 'materials', m.id), {isShowAnswersEnabled: !m.isShowAnswersEnabled})} className={`p-4 rounded-xl ${m.isShowAnswersEnabled ? 'bg-blue-500 text-white' : 'bg-slate-100 text-slate-400'}`} title="Показывать ответы">{m.isShowAnswersEnabled ? <BookOpen className="w-5 h-5"/> : <BookOpen className="w-5 h-5 opacity-50"/>}</button><button onClick={() => updateDoc(doc(db, 'artifacts', PORTAL_ID, 'public', 'data', 'materials', m.id), {isVisible: !m.isVisible})} className={`p-4 rounded-xl ${m.isVisible ? 'bg-emerald-500 text-white' : 'bg-slate-100 text-slate-400'}`}>{m.isVisible ? <Unlock className="w-5 h-5"/> : <Lock className="w-5 h-5"/>}</button><button onClick={() => deleteDoc(doc(db, 'artifacts', PORTAL_ID, 'public', 'data', 'materials', m.id))} className="p-4 bg-red-50 text-red-500 rounded-xl"><Trash2 className="w-5 h-5"/></button></div></div>)}</div></div></div>;
       
       case 'admin-preview-test': return (
         <div className="min-h-screen bg-slate-50 p-6 md:p-12 flex flex-col items-center">
@@ -478,9 +478,33 @@ const App = () => {
         </div>
       );
 
-      case 'admin-tasks-list': return <div className="p-10 bg-slate-50 min-h-screen text-center flex flex-col items-center"><div className="max-w-6xl w-full"><button onClick={() => setView('admin')} className="mb-10 text-slate-400 font-black uppercase text-xs flex items-center gap-2 self-start"><ArrowLeft className="w-4 h-4" /> Назад</button><button onClick={() => setView('setup-tasks')} className="mb-6 w-full bg-slate-900 text-white py-6 rounded-2xl font-black uppercase text-xs">Добавить задачи</button><div className="grid gap-4 w-full">{taskSections.map(s => <div key={s.id} className="bg-white p-6 rounded-2xl shadow flex justify-between items-center text-left"><h4 className="font-black text-slate-900 uppercase text-left">{s.title}</h4><div className="flex gap-4"><button onClick={() => updateDoc(doc(db, 'artifacts', PORTAL_ID, 'public', 'data', 'task_sections', s.id), {isVisible: !s.isVisible})} className={`p-4 rounded-xl ${s.isVisible ? 'bg-blue-500 text-white' : 'bg-slate-100 text-slate-400'}`}>{s.isVisible ? <Unlock className="w-5 h-5"/> : <Lock className="w-5 h-5"/>}</button><button onClick={() => deleteDoc(doc(db, 'artifacts', PORTAL_ID, 'public', 'data', 'task_sections', s.id))} className="p-4 bg-red-50 text-red-500 rounded-xl"><Trash2 className="w-5 h-5"/></button></div></div>)}</div></div></div>;
+      case 'admin-preview-tasks': return (
+        <div className="min-h-screen bg-slate-50 p-6 md:p-12 flex flex-col items-center">
+            <div className="max-w-4xl w-full text-left">
+                 <button onClick={() => setView('admin-tasks-list')} className="mb-8 text-slate-400 font-black uppercase text-xs flex items-center gap-2 hover:text-slate-900 transition-all"><ArrowLeft className="w-4 h-4" /> Назад к списку</button>
+                 <h2 className="text-3xl font-black text-slate-900 mb-8 uppercase tracking-tighter">{activeTaskSection?.title}</h2>
+                 <div className="space-y-6">
+                    {activeTaskSection?.tasks?.map((t, i) => (
+                        <div key={i} className="bg-white p-8 rounded-[2rem] shadow-sm border border-slate-100">
+                            <h4 className="font-bold text-lg text-slate-900 mb-4">Задача {i+1}</h4>
+                            <p className="text-slate-700 mb-6">{t.text}</p>
+                            <div className="p-6 bg-emerald-50 rounded-xl border border-emerald-100">
+                                <span className="text-xs font-black uppercase text-emerald-600 block mb-2">Ответ:</span>
+                                <p className="text-emerald-900 font-medium">{t.answer}</p>
+                            </div>
+                        </div>
+                    ))}
+                 </div>
+            </div>
+        </div>
+      );
+
+      case 'admin-tasks-list': return <div className="p-10 bg-slate-50 min-h-screen text-center flex flex-col items-center"><div className="max-w-6xl w-full"><button onClick={() => setView('admin')} className="mb-10 text-slate-400 font-black uppercase text-xs flex items-center gap-2 self-start"><ArrowLeft className="w-4 h-4" /> Назад</button><button onClick={() => setView('setup-tasks')} className="mb-6 w-full bg-slate-900 text-white py-6 rounded-2xl font-black uppercase text-xs">Добавить задачи</button><div className="grid gap-4 w-full">{taskSections.map(s => <div key={s.id} className="bg-white p-6 rounded-2xl shadow flex justify-between items-center text-left"><h4 className="font-black text-slate-900 uppercase text-left">{s.title}</h4><div className="flex gap-4"><button onClick={() => { setActiveTaskSection(s); setView('admin-preview-tasks'); }} className="p-4 bg-slate-100 rounded-xl hover:bg-emerald-100 text-emerald-600 transition-all" title="Просмотр задач"><Eye className="w-5 h-5"/></button><button onClick={() => updateDoc(doc(db, 'artifacts', PORTAL_ID, 'public', 'data', 'task_sections', s.id), {isAnswersEnabled: !s.isAnswersEnabled})} className={`p-4 rounded-xl ${s.isAnswersEnabled ? 'bg-blue-500 text-white' : 'bg-slate-100 text-slate-400'}`} title="Разрешить просмотр ответов">{s.isAnswersEnabled ? <BookOpen className="w-5 h-5"/> : <BookOpen className="w-5 h-5 opacity-50"/>}</button><button onClick={() => updateDoc(doc(db, 'artifacts', PORTAL_ID, 'public', 'data', 'task_sections', s.id), {isVisible: !s.isVisible})} className={`p-4 rounded-xl ${s.isVisible ? 'bg-emerald-500 text-white' : 'bg-slate-100 text-slate-400'}`}>{s.isVisible ? <Unlock className="w-5 h-5"/> : <Lock className="w-5 h-5"/>}</button><button onClick={() => deleteDoc(doc(db, 'artifacts', PORTAL_ID, 'public', 'data', 'task_sections', s.id))} className="p-4 bg-red-50 text-red-500 rounded-xl"><Trash2 className="w-5 h-5"/></button></div></div>)}</div></div></div>;
+      
       case 'setup-tasks': return <div className="min-h-screen bg-slate-950 flex items-center justify-center p-4"><div className="max-w-4xl w-full bg-white p-10 rounded-[3rem] text-center flex flex-col items-center"><button onClick={() => setView('admin-tasks-list')} className="mb-8 text-slate-400 font-black uppercase text-xs flex items-center gap-2 self-start"><ArrowLeft className="w-4 h-4" /> Назад</button><h2 className="text-3xl font-black uppercase mb-6">Новые задачи</h2><input value={inputTitle} onChange={e => setInputTitle(e.target.value)} className="w-full p-6 bg-slate-50 rounded-2xl mb-4 font-bold text-center" placeholder="Название темы" /><textarea value={inputText} onChange={e => setInputText(e.target.value)} className="w-full h-64 p-6 bg-slate-50 rounded-2xl mb-6 font-bold text-left" placeholder="Задача [ТЕКСТ] Ответ [ЭТАЛОН]..." /><button onClick={handleSaveTasks} className="w-full bg-blue-600 text-white py-6 rounded-2xl font-black uppercase">Загрузить</button></div></div>;
+      
       case 'student-select-test': return <div className="min-h-screen bg-slate-950 p-6 flex flex-col items-center"><div className="max-w-5xl w-full text-left"><button onClick={() => setView('menu')} className="mb-10 text-slate-400 font-black uppercase text-xs flex items-center gap-2"><ArrowLeft className="w-4 h-4" /> Назад</button><h2 className="text-white text-3xl font-black uppercase mb-8">Тесты</h2><div className="grid gap-4">{materials.filter(m => m.isVisible).map(m => <button key={m.id} onClick={() => { setActiveMaterial(m); setStudentAnswers([]); setCurrentQuestionIndex(0); setView('quiz'); }} className="bg-white/10 p-8 rounded-3xl border-2 border-slate-800 text-white font-black text-left flex justify-between items-center uppercase">{m.title}<ChevronRight className="text-slate-600"/></button>)}</div></div></div>;
+      
       case 'student-select-tasks': return <div className="min-h-screen bg-slate-950 p-6 flex flex-col items-center"><div className="max-w-5xl w-full text-left"><button onClick={() => setView('menu')} className="mb-10 text-slate-400 font-black uppercase text-xs flex items-center gap-2"><ArrowLeft className="w-4 h-4" /> Назад</button><h2 className="text-white text-3xl font-black uppercase mb-8">Задачи</h2><div className="grid gap-4">{taskSections.filter(t => t.isVisible).map(t => <button key={t.id} onClick={() => { setActiveTaskSection(t); setCurrentTaskIndex(0); setShowAnswerLocally(false); setView('task-viewer'); }} className="bg-white/10 p-8 rounded-3xl border-2 border-slate-800 text-white font-black text-left flex justify-between items-center uppercase">{t.title}<ChevronRight className="text-slate-600"/></button>)}</div></div></div>;
       
       case 'quiz': 
@@ -510,8 +534,13 @@ const App = () => {
                             
                             let cls = 'bg-slate-50 border-2 border-slate-100 text-slate-600 hover:border-blue-300'; 
                             if (isAns_quiz) { 
-                                if (isSel) cls = isCorr ? 'bg-emerald-50 border-emerald-500 text-emerald-700 font-black' : 'bg-red-50 border-red-500 text-red-700 font-black'; 
-                                else cls = isCorr ? 'bg-emerald-50/50 border-emerald-200 text-emerald-700' : 'opacity-30 grayscale'; 
+                                if (isSel) {
+                                    cls = isCorr ? 'bg-emerald-50 border-emerald-500 text-emerald-700 font-black' : 'bg-red-50 border-red-500 text-red-700 font-black'; 
+                                } else if (activeMaterial.isShowAnswersEnabled && isCorr) {
+                                    cls = 'bg-emerald-50/50 border-emerald-200 text-emerald-700'; 
+                                } else {
+                                    cls = 'opacity-30 grayscale';
+                                }
                             } 
                             return <button key={idx} disabled={isAns_quiz} onClick={() => { const a = [...studentAnswers]; a[currentQuestionIndex] = idx; setStudentAnswers(a); }} className={`w-full text-left p-6 rounded-2xl font-bold transition-all ${cls}`}>{opt}</button>
                         })}
