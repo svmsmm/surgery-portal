@@ -86,6 +86,10 @@ const App = () => {
   // Состояние для импорта JSON
   const [importJsonText, setImportJsonText] = useState('');
 
+  // === ДОБАВЛЕНО: Рефы и состояния для Анти-чит системы ===
+  const finishQuizRef = useRef(null);
+  const [cheatWarnings, setCheatWarnings] = useState(0);
+
   // 1. Авторизация
   useEffect(() => {
     if (!auth) return;
@@ -139,6 +143,37 @@ const App = () => {
     return () => clearInterval(timerRef.current);
   }, [view, activeMaterial]);
 
+  // === ДОБАВЛЕНО: Анти-чит логика (Отслеживание переключения вкладок) ===
+  useEffect(() => {
+    // Сбрасываем предупреждения, если студент не в режиме теста
+    if (view !== 'quiz') {
+      setCheatWarnings(0);
+      return;
+    }
+
+    const handleVisibilityChange = () => {
+      // Если вкладка скрыта (пользователь свернул браузер или переключился)
+      if (document.hidden && view === 'quiz') {
+        setCheatWarnings(prev => {
+          const newWarnings = prev + 1;
+          if (newWarnings >= 3) {
+            alert("🚨 ТЕСТ АННУЛИРОВАН!\n\nВы многократно переключались на другие вкладки или приложения. Ваш текущий результат отправлен автоматически.");
+            // Принудительно вызываем функцию завершения теста
+            if (finishQuizRef.current) finishQuizRef.current();
+          } else {
+            alert(`⚠️ ПРЕДУПРЕЖДЕНИЕ (${newWarnings} из 3)\n\nВы покинули страницу теста. Не переключайтесь на другие приложения! После 3-й попытки тест будет завершен.`);
+          }
+          return newWarnings;
+        });
+      }
+    };
+
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [view]);
+
   const showToast = (msg) => {
     setToastMessage(msg);
     setTimeout(() => setToastMessage(null), 5000);
@@ -150,7 +185,6 @@ const App = () => {
     return `${min}:${sec < 10 ? '0' + sec : sec}`;
   };
 
-  // --- ЛОГИКА ИМПОРТА JSON (NEW) ---
   const handleImportJson = async () => {
     if (!importJsonText.trim() || !inputTitle.trim()) {
         return showToast("Заполните название и вставьте JSON!");
@@ -167,7 +201,6 @@ const App = () => {
         }
 
         let questionsRaw = [];
-        // Поддержка разных структур JSON (массив или объект с полем questions)
         if (Array.isArray(data)) {
             questionsRaw = data;
         } else if (data.questions && Array.isArray(data.questions)) {
@@ -176,9 +209,7 @@ const App = () => {
             throw new Error("Не удалось найти массив вопросов в JSON.");
         }
 
-        // Нормализация данных (приведение к единому виду)
         const normalizedQuestions = questionsRaw.map(q => {
-            // Вариант 1: Формат из чата (answerOptions с isCorrect)
             if (q.answerOptions && Array.isArray(q.answerOptions)) {
                 const options = q.answerOptions.map(opt => opt.text);
                 const correctIndex = q.answerOptions.findIndex(opt => opt.isCorrect === true);
@@ -188,7 +219,6 @@ const App = () => {
                     correctIndex: correctIndex === -1 ? 0 : correctIndex
                 };
             }
-            // Вариант 2: Стандартный формат (options + correctIndex/correctAnswer)
             return {
                 question: q.question || q.text || "Вопрос без текста",
                 options: q.options || [],
@@ -220,7 +250,6 @@ const App = () => {
     }
   };
 
-  // --- ГЕНЕРАЦИЯ (Через сервер Vercel) ---
   const handleGenerateTest = async (existing = null) => {
     setDebugLog(""); 
     const text = existing ? existing.content : inputText;
@@ -292,7 +321,6 @@ const App = () => {
     clearInterval(timerRef.current);
     if (!activeMaterial) return;
     
-    // ФИКС ПОДСЧЕТА
     const score = studentAnswers.reduce((acc, ans, idx) => {
         if (ans === undefined) return acc;
         return acc + (Number(ans) === Number(activeMaterial.questions[idx].correctIndex) ? 1 : 0);
@@ -304,6 +332,11 @@ const App = () => {
     });
     setView('result');
   };
+
+  // === ДОБАВЛЕНО: Обновление ссылки на актуальный метод finishQuiz для анти-чита ===
+  useEffect(() => {
+    finishQuizRef.current = finishQuiz;
+  });
 
   const quitQuiz = () => {
       if (window.confirm("Выйти из теста? Результат будет сохранен как есть (неотвеченные = 0).")) {
@@ -415,7 +448,6 @@ const App = () => {
         </div>
       );
       
-      // --- ЭКРАН ИМПОРТА JSON ---
       case 'import-json': return (
         <div className="min-h-screen bg-slate-900 flex items-center justify-center p-4">
             <div className="max-w-4xl w-full bg-white rounded-[4rem] p-12 sm:p-20 shadow-2xl relative text-center flex flex-col items-center">
@@ -507,13 +539,18 @@ const App = () => {
       
       case 'student-select-tasks': return <div className="min-h-screen bg-slate-950 p-6 flex flex-col items-center"><div className="max-w-5xl w-full text-left"><button onClick={() => setView('menu')} className="mb-10 text-slate-400 font-black uppercase text-xs flex items-center gap-2"><ArrowLeft className="w-4 h-4" /> Назад</button><h2 className="text-white text-3xl font-black uppercase mb-8">Задачи</h2><div className="grid gap-4">{taskSections.filter(t => t.isVisible).map(t => <button key={t.id} onClick={() => { setActiveTaskSection(t); setCurrentTaskIndex(0); setShowAnswerLocally(false); setView('task-viewer'); }} className="bg-white/10 p-8 rounded-3xl border-2 border-slate-800 text-white font-black text-left flex justify-between items-center uppercase">{t.title}<ChevronRight className="text-slate-600"/></button>)}</div></div></div>;
       
+      // === ДОБАВЛЕНО: Запрет выделения и контекстного меню на экране теста ===
       case 'quiz': 
         if (!activeMaterial) return null;
         const q_quiz = activeMaterial.questions[currentQuestionIndex];
         const qText = q_quiz.question || q_quiz.text; 
         const isAns_quiz = studentAnswers[currentQuestionIndex] !== undefined;
         
-        return <div className="min-h-screen bg-slate-950 flex flex-col items-center text-center">
+        return <div 
+            className="min-h-screen bg-slate-950 flex flex-col items-center text-center select-none"
+            onContextMenu={(e) => e.preventDefault()}
+            style={{ WebkitUserSelect: 'none', userSelect: 'none', WebkitTouchCallout: 'none' }}
+        >
             <div className="w-full p-5 bg-slate-900 border-b border-slate-800 flex justify-between px-6 items-center text-white font-black tabular-nums">
                 <button onClick={quitQuiz} className="p-2 bg-red-900/30 text-red-500 rounded-lg hover:bg-red-900/50 transition-all" title="Выйти из теста"><X className="w-4 h-4"/></button>
                 <div className="flex gap-4">
@@ -526,7 +563,7 @@ const App = () => {
             
             <div className="w-full max-w-3xl p-6 flex-1 flex flex-col justify-center text-left">
                 <div className="bg-white p-12 rounded-[3rem] shadow-2xl mb-8">
-                    <h2 className="text-xl md:text-2xl font-bold text-slate-900 mb-8 leading-relaxed">{qText}</h2>
+                    <h2 className="text-xl md:text-2xl font-bold text-slate-900 mb-8 leading-relaxed pointer-events-none">{qText}</h2>
                     <div className="grid gap-3">
                         {q_quiz.options.map((opt, idx) => { 
                             const isSel = studentAnswers[currentQuestionIndex] === idx; 
@@ -557,10 +594,16 @@ const App = () => {
             </div>
         </div>;
 
+      // === ДОБАВЛЕНО: Запрет выделения и контекстного меню на экране задач ===
       case 'task-viewer':
         if (!activeTaskSection) return null;
         const t_case = activeTaskSection.tasks[currentTaskIndex];
-        return <div className="min-h-screen bg-slate-950 flex flex-col items-center"><div className="w-full p-5 bg-slate-900 border-b border-slate-800 flex justify-between px-10 text-white font-black uppercase text-xs tracking-widest text-center"><button onClick={() => setView('student-select-tasks')} className="bg-slate-800 p-2 rounded-lg"><ArrowLeft className="w-4 h-4"/></button><span className="truncate max-w-[200px]">{activeTaskSection.title}</span><span>{currentTaskIndex + 1} / {activeTaskSection.tasks.length}</span></div><div className="max-w-4xl w-full p-6 flex-1 flex flex-col justify-center text-left text-left text-left"><div className="bg-white p-12 rounded-[4rem] shadow-2xl"><p className="text-xl font-bold text-slate-800 leading-relaxed mb-8">{t_case?.text}</p>{activeTaskSection.isAnswersEnabled && (showAnswerLocally ? <div className="bg-emerald-50 border-2 border-emerald-100 p-10 rounded-[2.5rem] animate-in slide-in-from-top-4 shadow-inner text-left"><p className="text-emerald-900 font-bold text-xl italic">{t_case?.answer}</p></div> : <button onClick={() => setShowAnswerLocally(true)} className="w-full py-8 border-4 border-dashed border-emerald-100 text-emerald-600 rounded-[2.5rem] font-black uppercase text-xs">Показать эталон</button>)}</div><div className="flex justify-between mt-8"><button disabled={currentTaskIndex === 0} onClick={() => { setCurrentTaskIndex(p => p - 1); setShowAnswerLocally(false); }} className="bg-slate-800 p-6 rounded-3xl text-white font-black"><ArrowLeft className="w-4 h-4" /></button><button disabled={currentTaskIndex === activeTaskSection.tasks.length - 1} onClick={() => { setCurrentTaskIndex(p => p + 1); setShowAnswerLocally(false); }} className="bg-blue-600 p-6 rounded-3xl text-white font-black"><ArrowRight className="w-4 h-4" /></button></div></div></div>;
+        return <div 
+            className="min-h-screen bg-slate-950 flex flex-col items-center select-none"
+            onContextMenu={(e) => e.preventDefault()}
+            style={{ WebkitUserSelect: 'none', userSelect: 'none', WebkitTouchCallout: 'none' }}
+        ><div className="w-full p-5 bg-slate-900 border-b border-slate-800 flex justify-between px-10 text-white font-black uppercase text-xs tracking-widest text-center"><button onClick={() => setView('student-select-tasks')} className="bg-slate-800 p-2 rounded-lg"><ArrowLeft className="w-4 h-4"/></button><span className="truncate max-w-[200px]">{activeTaskSection.title}</span><span>{currentTaskIndex + 1} / {activeTaskSection.tasks.length}</span></div><div className="max-w-4xl w-full p-6 flex-1 flex flex-col justify-center text-left text-left text-left"><div className="bg-white p-12 rounded-[4rem] shadow-2xl"><p className="text-xl font-bold text-slate-800 leading-relaxed mb-8 pointer-events-none">{t_case?.text}</p>{activeTaskSection.isAnswersEnabled && (showAnswerLocally ? <div className="bg-emerald-50 border-2 border-emerald-100 p-10 rounded-[2.5rem] animate-in slide-in-from-top-4 shadow-inner text-left"><p className="text-emerald-900 font-bold text-xl italic">{t_case?.answer}</p></div> : <button onClick={() => setShowAnswerLocally(true)} className="w-full py-8 border-4 border-dashed border-emerald-100 text-emerald-600 rounded-[2.5rem] font-black uppercase text-xs">Показать эталон</button>)}</div><div className="flex justify-between mt-8"><button disabled={currentTaskIndex === 0} onClick={() => { setCurrentTaskIndex(p => p - 1); setShowAnswerLocally(false); }} className="bg-slate-800 p-6 rounded-3xl text-white font-black"><ArrowLeft className="w-4 h-4" /></button><button disabled={currentTaskIndex === activeTaskSection.tasks.length - 1} onClick={() => { setCurrentTaskIndex(p => p + 1); setShowAnswerLocally(false); }} className="bg-blue-600 p-6 rounded-3xl text-white font-black"><ArrowRight className="w-4 h-4" /></button></div></div></div>;
+      
       case 'result': return <div className="min-h-screen bg-slate-950 flex items-center justify-center p-4 text-center"><div className="max-w-2xl w-full bg-white rounded-[5rem] p-20 shadow-2xl relative text-center flex flex-col items-center"><Trophy className="w-20 h-20 text-emerald-600 mb-10" /><h1 className="text-4xl font-black uppercase mb-10">Готово!</h1><div className="grid grid-cols-2 gap-8 mb-12 w-full text-center"><div className="bg-emerald-50 p-10 rounded-[3rem] border border-emerald-100"><p className="text-[10px] font-black text-emerald-400 uppercase mb-4">Баллы</p><p className="text-5xl font-black text-emerald-600">{(results[0]?.score || 0)}</p></div><div className="bg-slate-50 p-10 rounded-[3rem] border border-slate-100"><p className="text-[10px] font-black text-slate-400 uppercase mb-4">Успех</p><p className="text-5xl font-black text-slate-900">{(results[0]?.percentage || 0)}%</p></div></div><button onClick={() => setView('menu')} className="w-full bg-slate-900 text-white py-8 rounded-[2.5rem] font-black uppercase text-lg">На главную</button></div></div>;
       default: return null;
     }
