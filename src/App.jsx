@@ -16,15 +16,14 @@ import {
   getAuth, signInAnonymously, onAuthStateChanged 
 } from 'firebase/auth';
 
-// КОНФИГУРАЦИЯ FIREBASE
+// КОНФИГУРАЦИЯ FIREBASE (ОБНОВЛЕННАЯ)
 const firebaseConfig = {
-  apiKey: "AIzaSyCgoD4vZCEU2W_w3TzE3102JcnlXnocmMg",
-  authDomain: "surgery-app-89c4c.firebaseapp.com",
-  projectId: "surgery-app-89c4c",
-  storageBucket: "surgery-app-89c4c.firebasestorage.app",
-  messagingSenderId: "1026236136369",
-  appId: "1:1026236136369:web:11807c6845c4719a939b90",
-  measurementId: "G-1P2WMCMEMC"
+  apiKey: "AIzaSyBju4nxP0H9I9cjAteBiLH-kcH-tW762O8",
+  authDomain: "surgery-app-v2.firebaseapp.com",
+  projectId: "surgery-app-v2",
+  storageBucket: "surgery-app-v2.firebasestorage.app",
+  messagingSenderId: "867573161757",
+  appId: "1:867573161757:web:4f7fd79c4b02dbf123cbf4"
 };
 
 let app, auth, db;
